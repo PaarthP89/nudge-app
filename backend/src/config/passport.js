@@ -17,7 +17,13 @@ passport.use(new GoogleStrategy(
     callbackURL: `${process.env.BACKEND_URL}/api/auth/google/callback`
   },
   (accessToken, refreshToken, profile, done) => {
-    const user = { id: profile.id, accessToken, refreshToken, profile };
+    const existing = users.get(profile.id);
+    const user = {
+      id: profile.id,
+      accessToken,
+      refreshToken: refreshToken || existing?.refreshToken,
+      profile
+    };
     users.set(profile.id, user);
     return done(null, user);
   }

@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Scaffolding complete (2026-05-21), implementing Phase 1 features.
+**Status:** Google OAuth login complete (2026-05-21), implementing Phase 1 features.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -43,7 +43,10 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - React + Vite frontend with Router, placeholder components
   - Jest + Supertest tests (21 passing)
   - Google OAuth, Google Calendar API, Claude API, Gmail API wired
-- [ ] Google Calendar OAuth 2.0 login
+- [x] Google Calendar OAuth 2.0 login — ✓ Complete (2026-05-21)
+  - Passport Google strategy with offline access + refresh token preservation
+  - Scopes: profile, email, Google Calendar, Gmail send
+  - Frontend login page tested end-to-end
 - [ ] Live calendar grid view (month/week, read-only initially)
 - [ ] Text-based NL scheduling input (chat interface)
 - [ ] AI intent parsing (extract: action, title, attendees, time, duration, location)

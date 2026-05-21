@@ -5,7 +5,11 @@ const { SCOPES } = require('../config/passport');
 
 const router = express.Router();
 
-router.get('/google', passport.authenticate('google', { scope: SCOPES }));
+router.get('/google', passport.authenticate('google', {
+  scope: SCOPES,
+  accessType: 'offline',
+  prompt: 'consent'
+}));
 
 router.get(
   '/google/callback',
