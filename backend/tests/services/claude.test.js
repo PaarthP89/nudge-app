@@ -15,7 +15,9 @@ describe('normalizeClaudeResponse — valid JSON', () => {
     duration_minutes: 30,
     attendees: ['alice@example.com'],
     location: 'Zoom',
-    confidence: 0.95
+    confidence: 0.95,
+    date_known: true,
+    time_known: true,
   };
 
   it('parses a well-formed JSON string', () => {
@@ -24,7 +26,9 @@ describe('normalizeClaudeResponse — valid JSON', () => {
       action: 'create',
       title: 'Team standup',
       confidence: 0.95,
-      attendees: ['alice@example.com']
+      attendees: ['alice@example.com'],
+      date_known: true,
+      time_known: true,
     });
   });
 
@@ -68,6 +72,13 @@ describe('normalizeClaudeResponse — valid JSON', () => {
       ).not.toThrow();
     });
   });
+
+  it('coerces missing date_known / time_known to false', () => {
+    const { date_known: _d, time_known: _t, ...rest } = base;
+    const result = normalizeClaudeResponse(JSON.stringify(rest));
+    expect(result.date_known).toBe(false);
+    expect(result.time_known).toBe(false);
+  });
 });
 
 describe('normalizeClaudeResponse — malformed input', () => {
@@ -77,12 +88,12 @@ describe('normalizeClaudeResponse — malformed input', () => {
 
   it('throws on JSON missing confidence', () => {
     const bad = { action: 'create', attendees: [] };
-    expect(() => normalizeClaudeResponse(JSON.stringify(bad))).toThrow(/confidence/);
+    expect(() => normalizeClaudeResponse(JSON.stringify(bad))).toThrow(/confidence/i);
   });
 
   it('throws when attendees is not an array', () => {
     const bad = { action: 'create', attendees: 'alice', confidence: 0.9 };
-    expect(() => normalizeClaudeResponse(JSON.stringify(bad))).toThrow(/attendees/);
+    expect(() => normalizeClaudeResponse(JSON.stringify(bad))).toThrow(/attendees/i);
   });
 
   it('throws on unknown action value', () => {
@@ -97,45 +108,68 @@ describe('normalizeClaudeResponse — malformed input', () => {
 
 // ─── buildIntentReply ─────────────────────────────────────────────────────────
 
-const highConfidentIntent = {
+const full = {
   action: 'create',
   title: 'Sprint planning',
-  start_time: '2026-05-23T10:00:00Z',
+  start_time: '2026-05-23T10:00:00-04:00',
   end_time: null,
   duration_minutes: 60,
   attendees: [],
   location: null,
-  confidence: 0.9
+  confidence: 0.9,
+  date_known: true,
+  time_known: true,
 };
 
 describe('buildIntentReply', () => {
-  it('returns a confirmation string for high-confidence create intent', () => {
-    const reply = buildIntentReply(highConfidentIntent);
-    expect(typeof reply).toBe('string');
+  it('confirms when all three fields are present', () => {
+    const reply = buildIntentReply(full);
     expect(reply).toMatch(/schedule/i);
     expect(reply).toMatch(/"Sprint planning"/);
   });
 
-  it('uses the action verb for non-create actions', () => {
-    const reply = buildIntentReply({ ...highConfidentIntent, action: 'delete' });
-    expect(reply).toMatch(/delete/i);
+  it('asks for time when time_known is false', () => {
+    const reply = buildIntentReply({ ...full, time_known: false });
+    expect(reply).toMatch(/time/i);
+    expect(reply).toMatch(/"Sprint planning"/);
   });
 
-  it('returns clarification request when confidence < 0.5', () => {
-    const reply = buildIntentReply({ ...highConfidentIntent, confidence: 0.4 });
-    expect(reply).toMatch(/not quite sure/i);
-    expect(reply).toMatch(/more specific/i);
+  it('asks what to call the event when title is missing but date+time are known', () => {
+    const reply = buildIntentReply({ ...full, title: null });
+    expect(reply).toMatch(/call this event/i);
   });
 
-  it('returns clarification request when action is unknown', () => {
-    const reply = buildIntentReply({ ...highConfidentIntent, action: 'unknown', confidence: 0.9 });
-    expect(reply).toMatch(/not quite sure/i);
+  it('asks for time and name when date is known but time and title are missing', () => {
+    const reply = buildIntentReply({ ...full, title: null, time_known: false });
+    expect(reply).toMatch(/time/i);
+    expect(reply).toMatch(/call it/i);
   });
 
-  it('handles null title gracefully', () => {
-    const reply = buildIntentReply({ ...highConfidentIntent, title: null });
+  it('asks when to schedule when title known but date and time are missing', () => {
+    const reply = buildIntentReply({ ...full, date_known: false, time_known: false, start_time: null });
+    expect(reply).toMatch(/when/i);
+    expect(reply).toMatch(/"Sprint planning"/);
+  });
+
+  it('returns generic prompt when nothing is known', () => {
+    const reply = buildIntentReply({ ...full, title: null, date_known: false, time_known: false, start_time: null });
     expect(typeof reply).toBe('string');
     expect(reply.length).toBeGreaterThan(0);
+  });
+
+  it('returns clarification when action is unknown', () => {
+    const reply = buildIntentReply({ ...full, action: 'unknown' });
+    expect(reply).toMatch(/not sure/i);
+  });
+
+  it('returns clarification when confidence is very low', () => {
+    const reply = buildIntentReply({ ...full, action: 'unknown', confidence: 0.1 });
+    expect(reply).toMatch(/not sure/i);
+  });
+
+  it('handles non-create actions', () => {
+    const reply = buildIntentReply({ ...full, action: 'delete' });
+    expect(reply).toMatch(/delete/i);
   });
 });
 
@@ -150,7 +184,7 @@ describe('buildParsePrompt', () => {
 
   it('mentions the required JSON schema fields', () => {
     const prompt = buildParsePrompt('2026-05-23T10:00:00Z', 'UTC');
-    ['action', 'title', 'start_time', 'end_time', 'duration_minutes', 'attendees', 'location', 'confidence']
+    ['action', 'title', 'start_time', 'end_time', 'duration_minutes', 'attendees', 'location', 'confidence', 'date_known', 'time_known']
       .forEach(field => expect(prompt).toContain(field));
   });
 });

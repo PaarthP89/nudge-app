@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 1 chat/scheduling core complete (2026-05-22). Live calendar grid view is the only remaining Phase 1 item.
+**Status:** Phase 1 complete (2026-05-22). All MVP features working: multi-turn chat with draft accumulation, date/time/title state machine, conflict detection with Continue/Cancel, confirmation, event creation, calendar grid (month/week) with auto-refresh, and 30-day persistent sessions.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -47,24 +47,38 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - Passport Google strategy with offline access + refresh token preservation
   - Scopes: profile, email, Google Calendar, Gmail send
   - Frontend login page tested end-to-end
-- [ ] Live calendar grid view (month/week, read-only initially)
+- [x] Live calendar grid view (month/week, read-only) — ✓ Complete (2026-05-22)
+  - Month and week views with day/week/month navigation
+  - All-day event strip; timed events with overlap layout
+  - Today indicator and today button; today circle in date
 - [x] Text-based NL scheduling input (chat interface) — ✓ Complete (2026-05-22)
   - ChatPanel component with message thread, typing indicator, input row
   - Message type system: text | intent | conflict | confirm | alternatives
 - [x] AI intent parsing (extract: action, title, attendees, time, duration, location) — ✓ Complete (2026-05-22)
   - Groq/llama-3.1-8b-instant via ClaudeService (service name preserved for compatibility)
-  - Structured JSON intent: action, title, start_time, end_time, duration_minutes, attendees, location, confidence
-  - IntentCard renders parsed details inside assistant bubble
+  - Intent schema includes `date_known` and `time_known` booleans; these are tracked separately so partial info accumulates correctly across turns
+  - IntentCard renders parsed details; WHEN row only shown when `time_known` is true; confidence % hidden
+  - parseIntent catches malformed model output and returns fallback unknown intent (no 500s)
+  - buildIntentReply covers all 8 combinations of missing/present title/date/time and asks for exactly what's missing
+  - Conflict check only runs when `date_known && time_known` (never on midnight placeholders)
+  - Confirm card only shown when title + date_known + time_known + confidence >= 0.5
+  - Running draft intent (useRef) accumulates fields across turns via mergeDraft(); date+time from separate turns are combined when both eventually known
+  - Draft cleared only on successful confirm; Cancel button on conflict card clears it too (fresh start)
+  - Context injected as compact `[DRAFT:title="x" datetime=...]` prefix — prevents model from misreading label text as event content
 - [x] Conflict detection (query existing events, flag overlaps) — ✓ Complete (2026-05-22)
   - `detectConflicts` pure function in googleCalendar.js; skips all-day events
   - Overlap: `eventStart < intentEnd && eventEnd > intentStart`
-  - ConflictCard shown in chat when conflicts found
+  - ConflictCard shown with **Continue anyway** and **Cancel** buttons; Cancel wipes the draft entirely
 - [x] Confirmation step before write (show parsed event, allow edit) — ✓ Complete (2026-05-22)
   - ConfirmCard with idle | loading | done | error | cancelled states
-  - "Schedule anyway" amber variant when conflicts exist
+  - "Schedule anyway" amber variant when conflicts exist (user already acknowledged via conflict card)
 - [x] Create calendar events (write to Google Calendar) — ✓ Complete (2026-05-22)
   - `createEvent` in GoogleCalendarService; infers end time from duration_minutes
   - `POST /api/assistant/confirm` route; returns 201 with normalized event
+  - Calendar grid auto-refreshes 500ms after successful scheduling (custom DOM event `nudge:event-created`)
+- [x] Persistent login sessions — ✓ Complete (2026-05-22)
+  - express-session cookie maxAge: 30 days; rolling: true resets expiry on each request
+  - Google refresh_token stored in session; googleapis handles access token auto-refresh per request
 - [ ] Delete calendar events
 
 ## Phase 2: P1 Features (Enhanced UX)

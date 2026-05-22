@@ -207,12 +207,6 @@
   word-break: break-word;
 }
 
-.intent-confidence {
-  margin-top: 4px;
-  font-size: 10px;
-  color: #9ca3af;
-  text-align: right;
-}
 
 /* ─── Conflict card ───────────────────────────────────────────────────────── */
 
@@ -251,6 +245,35 @@
   font-size: 11px;
   color: #6b7280;
 }
+
+.conflict-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.conflict-btn {
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.conflict-btn--continue {
+  background: #d97706;
+  color: #fff;
+}
+.conflict-btn--continue:hover { background: #b45309; }
+
+.conflict-btn--cancel {
+  background: transparent;
+  color: #6b7280;
+  padding: 5px 8px;
+}
+.conflict-btn--cancel:hover { color: #374151; }
 
 /* ─── Confirm card ────────────────────────────────────────────────────────── */
 

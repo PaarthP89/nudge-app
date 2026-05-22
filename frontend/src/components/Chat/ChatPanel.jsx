@@ -3,7 +3,7 @@ import useChat from '../../hooks/useChat';
 import './ChatPanel.css';
 
 // ─── IntentCard ───────────────────────────────────────────────────────────────
-// Renders the structured scheduling intent extracted by Claude.
+// Renders the structured scheduling intent extracted by the AI.
 // Only shown when confidence >= 0.5 and action is a real scheduling action.
 
 function formatDuration(mins) {
@@ -22,7 +22,7 @@ function IntentCard({ intent }) {
   if (intent.title) {
     rows.push({ label: 'Event', value: intent.title });
   }
-  if (intent.start_time) {
+  if (intent.start_time && intent.time_known) {
     const d = new Date(intent.start_time);
     rows.push({
       label: 'When',
@@ -52,9 +52,6 @@ function IntentCard({ intent }) {
           <span className="intent-value">{r.value}</span>
         </div>
       ))}
-      <div className="intent-confidence">
-        {Math.round(intent.confidence * 100)}% confidence
-      </div>
     </div>
   );
 }
@@ -70,8 +67,9 @@ function formatTimeRange(start, end) {
   return `${startStr} – ${endStr}`;
 }
 
-function ConflictCard({ conflicts }) {
-  if (!conflicts?.length) return null;
+function ConflictCard({ conflicts, onCancel }) {
+  const [dismissed, setDismissed] = useState(false);
+  if (!conflicts?.length || dismissed) return null;
   return (
     <div className="conflict-card">
       <div className="conflict-header">
@@ -83,6 +81,14 @@ function ConflictCard({ conflicts }) {
           <span className="conflict-event-time">{formatTimeRange(ev.start, ev.end)}</span>
         </div>
       ))}
+      <div className="conflict-actions">
+        <button className="conflict-btn conflict-btn--continue" onClick={() => setDismissed(true)}>
+          Continue anyway
+        </button>
+        <button className="conflict-btn conflict-btn--cancel" onClick={() => { onCancel?.(); setDismissed(true); }}>
+          Cancel
+        </button>
+      </div>
     </div>
   );
 }
@@ -152,7 +158,7 @@ function ConfirmCard({ payload, onConfirm }) {
 //   'conflict'     — conflict warning    (Objective 6, payload = conflict list)
 //   'alternatives' — slot suggestions   (Phase 2)
 
-function MessageBubble({ message, onConfirm }) {
+function MessageBubble({ message, onConfirm, onCancelDraft }) {
   const isUser = message.role === 'user';
 
   return (
@@ -163,7 +169,7 @@ function MessageBubble({ message, onConfirm }) {
           <IntentCard intent={message.payload} />
         )}
         {message.type === 'conflict' && (
-          <ConflictCard conflicts={message.payload} />
+          <ConflictCard conflicts={message.payload} onCancel={onCancelDraft} />
         )}
         {message.type === 'confirm' && (
           <ConfirmCard payload={message.payload} onConfirm={onConfirm} />
@@ -194,7 +200,7 @@ function TypingIndicator() {
 
 export default function ChatPanel() {
   const [input, setInput] = useState('');
-  const { messages, loading, error, sendMessage, confirmEvent } = useChat();
+  const { messages, loading, error, sendMessage, confirmEvent, cancelDraft } = useChat();
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -227,7 +233,7 @@ export default function ChatPanel() {
 
       <div className="chat-messages">
         {messages.map(msg => (
-          <MessageBubble key={msg.id} message={msg} onConfirm={confirmEvent} />
+          <MessageBubble key={msg.id} message={msg} onConfirm={confirmEvent} onCancelDraft={cancelDraft} />
         ))}
         {loading && <TypingIndicator />}
         {error && <div className="chat-error">{error}</div>}
