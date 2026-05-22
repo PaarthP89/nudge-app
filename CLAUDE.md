@@ -41,7 +41,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - [x] Project setup (repo, frontend/backend structure) — ✓ Scaffolding complete (2026-05-21)
   - Express backend with auth, calendar, assistant routes
   - React + Vite frontend with Router, placeholder components
-  - Jest + Supertest tests (83 passing)
+  - Jest + Supertest tests (88 passing)
   - Google OAuth, Google Calendar API, Groq API, Gmail API wired
 - [x] Google Calendar OAuth 2.0 login — ✓ Complete (2026-05-21)
   - Passport Google strategy with offline access + refresh token preservation
@@ -70,8 +70,8 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - Overlap: `eventStart < intentEnd && eventEnd > intentStart`
   - ConflictCard shown with **Continue anyway** and **Cancel** buttons; Cancel wipes the draft entirely
 - [x] Confirmation step before write (show parsed event, allow edit) — ✓ Complete (2026-05-22)
-  - ConfirmCard with idle | loading | done | error | cancelled states
-  - "Schedule anyway" amber variant when conflicts exist (user already acknowledged via conflict card)
+  - ConfirmCard with idle | loading | done | error | cancelled states (only shown when no conflicts)
+  - When conflicts exist, ConflictCard handles scheduling directly — no duplicate confirm card
 - [x] Create calendar events (write to Google Calendar) — ✓ Complete (2026-05-22)
   - `createEvent` in GoogleCalendarService; infers end time from duration_minutes
   - `POST /api/assistant/confirm` route; returns 201 with normalized event
@@ -79,9 +79,9 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - [x] Persistent login sessions — ✓ Complete (2026-05-22)
   - express-session cookie maxAge: 30 days; rolling: true resets expiry on each request
   - Google refresh_token stored in session; googleapis handles access token auto-refresh per request
-- [ ] Delete calendar events
 
 ## Phase 2: P1 Features (Enhanced UX)
+- [ ] Delete calendar events (deferred — not required for portfolio MVP)
 - [ ] AI rescheduling suggestions (if conflict, suggest alternatives)
 - [ ] Guest email invites via Gmail API
 - [ ] Voice input (Web Speech API)
