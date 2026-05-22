@@ -1,0 +1,417 @@
+/* ─── Shared shell ──────────────────────────────────────────────────────────── */
+
+.calendar-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #fff;
+  overflow: hidden;
+}
+
+/* ─── Toolbar ────────────────────────────────────────────────────────────────── */
+
+.calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  flex-shrink: 0;
+  gap: 12px;
+}
+
+.calendar-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nav-btn {
+  background: none;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  color: #374151;
+}
+.nav-btn:hover { background: #f3f4f6; }
+
+.today-btn {
+  background: none;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #374151;
+}
+.today-btn:hover { background: #f3f4f6; }
+
+.period-label {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  color: #111827;
+  white-space: nowrap;
+}
+
+.view-toggle {
+  display: flex;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.toggle-btn {
+  background: none;
+  border: none;
+  padding: 5px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  color: #374151;
+}
+.toggle-btn.active { background: #1d4ed8; color: #fff; }
+.toggle-btn:not(.active):hover { background: #f3f4f6; }
+
+/* ─── Error banner ───────────────────────────────────────────────────────────── */
+
+.calendar-error {
+  padding: 8px 16px;
+  background: #fef2f2;
+  color: #dc2626;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.calendar-error.auth-error a { color: #1d4ed8; text-decoration: underline; }
+
+/* ─── Loading ────────────────────────────────────────────────────────────────── */
+
+.calendar-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   MONTH VIEW
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.day-labels {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+  flex-shrink: 0;
+}
+
+.day-label {
+  padding: 6px 0;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.calendar-grid {
+  flex: 1;
+  display: grid;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.calendar-grid.month {
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: repeat(6, 1fr);
+}
+
+.calendar-cell {
+  border-right: 1px solid #f3f4f6;
+  border-bottom: 1px solid #f3f4f6;
+  padding: 4px 6px;
+  min-height: 80px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.calendar-cell.today         { background: #eff6ff; }
+.calendar-cell.outside-month { background: #fafafa; }
+
+.calendar-cell.outside-month .cell-date  { color: #c0c0c0; }
+.calendar-cell.outside-month .event-chip { opacity: 0.45; }
+
+.cell-date {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 2px;
+  color: #374151;
+}
+
+.today-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: #1d4ed8;
+  color: #fff;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cell-events {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.event-chip {
+  background: #dbeafe;
+  color: #1e40af;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.event-chip.all-day { background: #d1fae5; color: #065f46; }
+
+.event-time  { font-weight: 600; flex-shrink: 0; }
+.event-title { overflow: hidden; text-overflow: ellipsis; }
+
+.overflow-count {
+  font-size: 11px;
+  color: #6b7280;
+  padding: 1px 4px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   WEEK VIEW
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+.week-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Left gutter spacer — aligns header + all-day strip with the time grid */
+.week-gutter-spacer {
+  width: 52px;
+  flex-shrink: 0;
+}
+
+/* ── Day-of-week header ──────────────────────────────────────────────────────── */
+
+.week-day-header {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.week-col-header {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 4px 6px;
+  border-left: 1px solid #f3f4f6;
+  gap: 2px;
+}
+
+.week-col-dow {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.week-col-date {
+  font-size: 22px;
+  font-weight: 300;
+  color: #374151;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  line-height: 1;
+}
+
+.week-col-date.today-circle {
+  background: #1d4ed8;
+  color: #fff;
+  font-weight: 600;
+}
+
+/* ── All-day strip ───────────────────────────────────────────────────────────── */
+
+.week-allday-row {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e5e7eb;
+  min-height: 28px;
+}
+
+.week-allday-label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 8px;
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.week-allday-cell {
+  flex: 1;
+  border-left: 1px solid #f3f4f6;
+  padding: 3px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.week-allday-event {
+  background: #16a34a;
+  color: #fff;
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Scrollable time grid ────────────────────────────────────────────────────── */
+
+.week-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.week-time-grid {
+  display: flex;
+  height: 1440px; /* 24h × 60px */
+  position: relative;
+}
+
+/* Hour labels */
+.week-hour-gutter {
+  width: 52px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.week-hour-label {
+  position: absolute;
+  right: 8px;
+  font-size: 10px;
+  color: #9ca3af;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Day columns */
+.week-day-col {
+  flex: 1;
+  position: relative;
+  border-left: 1px solid #e5e7eb;
+}
+
+.week-day-col.today { background: #f8faff; }
+
+.week-hour-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid #f3f4f6;
+  pointer-events: none;
+}
+
+.week-half-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px dashed #f9fafb;
+  pointer-events: none;
+}
+
+/* Current-time indicator — red line with leading dot via ::before */
+.week-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #dc2626;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.week-now::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #dc2626;
+}
+
+/* Timed events */
+.week-event {
+  position: absolute;
+  background: #3b82f6;
+  color: #fff;
+  border-radius: 4px;
+  padding: 3px 6px;
+  overflow: hidden;
+  box-sizing: border-box;
+  cursor: default;
+  z-index: 1;
+  min-height: 20px;
+}
+
+.week-event:hover {
+  background: #2563eb;
+  z-index: 3;
+}
+
+.week-event-title {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+.week-event-time {
+  font-size: 11px;
+  opacity: 0.88;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
