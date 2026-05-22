@@ -137,15 +137,7 @@ export default function useChat() {
       ];
 
       const hasConflicts = conflicts?.length > 0;
-      if (hasConflicts) {
-        const count = conflicts.length;
-        const blurb = count === 1
-          ? 'Heads up — there\'s already an event in that time slot.'
-          : `Heads up — there are ${count} events in that time slot.`;
-        newMessages.push(makeMessage('assistant', blurb, 'conflict', conflicts));
-      }
 
-      // Show confirm only when all three pieces are confirmed
       const readyToConfirm =
         draft.action === 'create' &&
         draft.title &&
@@ -154,8 +146,21 @@ export default function useChat() {
         draft.start_time &&
         draft.confidence >= 0.5;
 
-      if (readyToConfirm) {
-        newMessages.push(makeMessage('assistant', '', 'confirm', { intent: draft, hasConflicts }));
+      if (hasConflicts) {
+        const count = conflicts.length;
+        const blurb = count === 1
+          ? 'Heads up — there\'s already an event in that time slot.'
+          : `Heads up — there are ${count} events in that time slot.`;
+        // Pass intent so "Continue anyway" can schedule directly — no second confirm card needed.
+        newMessages.push(makeMessage('assistant', blurb, 'conflict', {
+          conflicts,
+          intent: readyToConfirm ? draft : null,
+        }));
+      }
+
+      // Only show confirm card when there are no conflicts.
+      if (readyToConfirm && !hasConflicts) {
+        newMessages.push(makeMessage('assistant', '', 'confirm', { intent: draft, hasConflicts: false }));
       }
 
       setMessages(prev => [...prev, ...newMessages]);

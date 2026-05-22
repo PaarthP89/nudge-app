@@ -67,9 +67,28 @@ function formatTimeRange(start, end) {
   return `${startStr} – ${endStr}`;
 }
 
-function ConflictCard({ conflicts, onCancel }) {
-  const [dismissed, setDismissed] = useState(false);
-  if (!conflicts?.length || dismissed) return null;
+function ConflictCard({ payload, onConfirm, onCancel }) {
+  const { conflicts, intent } = payload ?? {};
+  const [status, setStatus] = useState('idle'); // idle | loading | done | error | dismissed
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  if (!conflicts?.length || status === 'dismissed') return null;
+
+  if (status === 'done') {
+    return <div className="confirm-card confirm-card--done">Scheduled! Check your calendar.</div>;
+  }
+  if (status === 'error') {
+    return <div className="confirm-card confirm-card--error">{errorMsg}</div>;
+  }
+
+  async function handleContinue() {
+    if (!intent) { setStatus('dismissed'); return; }
+    setStatus('loading');
+    const result = await onConfirm(intent);
+    if (result.success) setStatus('done');
+    else { setStatus('error'); setErrorMsg(result.error); }
+  }
+
   return (
     <div className="conflict-card">
       <div className="conflict-header">
@@ -82,10 +101,18 @@ function ConflictCard({ conflicts, onCancel }) {
         </div>
       ))}
       <div className="conflict-actions">
-        <button className="conflict-btn conflict-btn--continue" onClick={() => setDismissed(true)}>
-          Continue anyway
+        <button
+          className="conflict-btn conflict-btn--continue"
+          onClick={handleContinue}
+          disabled={status === 'loading'}
+        >
+          {status === 'loading' ? 'Scheduling…' : intent ? 'Schedule anyway' : 'Continue anyway'}
         </button>
-        <button className="conflict-btn conflict-btn--cancel" onClick={() => { onCancel?.(); setDismissed(true); }}>
+        <button
+          className="conflict-btn conflict-btn--cancel"
+          onClick={() => { onCancel?.(); setStatus('dismissed'); }}
+          disabled={status === 'loading'}
+        >
           Cancel
         </button>
       </div>
@@ -169,7 +196,7 @@ function MessageBubble({ message, onConfirm, onCancelDraft }) {
           <IntentCard intent={message.payload} />
         )}
         {message.type === 'conflict' && (
-          <ConflictCard conflicts={message.payload} onCancel={onCancelDraft} />
+          <ConflictCard payload={message.payload} onConfirm={onConfirm} onCancel={onCancelDraft} />
         )}
         {message.type === 'confirm' && (
           <ConfirmCard payload={message.payload} onConfirm={onConfirm} />
