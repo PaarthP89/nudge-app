@@ -39,7 +39,7 @@ async function runParse(req, res, next) {
     const reply = ClaudeService.buildIntentReply(intent);
 
     let conflicts = [];
-    if (intent.action === 'create' && intent.start_time) {
+    if (intent.action === 'create' && intent.start_time && intent.date_known && intent.time_known) {
       const { accessToken, refreshToken } = req.user;
       const calService = new GoogleCalendarService(accessToken, refreshToken);
       const windowStart = new Date(intent.start_time);
@@ -52,7 +52,7 @@ async function runParse(req, res, next) {
 
     res.json({ intent, reply, conflicts });
   } catch (err) {
-    console.error('[assistant] Gemini error:', err.status, err.statusCode, err.message);
+    console.error('[assistant] AI service error:', err.status, err.statusCode, err.message);
     const msg = String(err.message || '');
     const is429 = err.status === 429 || err.statusCode === 429 ||
                   msg.includes('429') || msg.toLowerCase().includes('resource_exhausted');

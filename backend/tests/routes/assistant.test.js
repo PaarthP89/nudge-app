@@ -50,7 +50,9 @@ const VALID_INTENT = {
   duration_minutes: 30,
   attendees: [],
   location: null,
-  confidence: 0.92
+  confidence: 0.92,
+  date_known: true,
+  time_known: true,
 };
 
 beforeEach(() => {

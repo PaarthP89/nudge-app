@@ -34,5 +34,11 @@ export default function useCalendar(startDate, endDate) {
     fetchEvents();
   }, [fetchEvents]);
 
+  useEffect(() => {
+    const handler = () => fetchEvents();
+    window.addEventListener('nudge:event-created', handler);
+    return () => window.removeEventListener('nudge:event-created', handler);
+  }, [fetchEvents]);
+
   return { events, loading, error, refetch: fetchEvents };
 }
