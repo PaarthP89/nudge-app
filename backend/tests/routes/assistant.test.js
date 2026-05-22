@@ -29,30 +29,81 @@ jest.mock('passport', () => {
 
 const app = require('../../src/app');
 
-const ASSISTANT_ENDPOINTS = [
-  { method: 'post', path: '/api/assistant/parse' },
-  { method: 'post', path: '/api/assistant/confirm' },
-  { method: 'post', path: '/api/assistant/chat' },
-  { method: 'post', path: '/api/assistant/suggest' }
-];
+// ── /chat ─────────────────────────────────────────────────────────────────────
 
-describe('Assistant routes — unauthenticated', () => {
+describe('POST /api/assistant/chat — unauthenticated', () => {
   beforeEach(() => { mockIsAuthenticated = false; });
 
-  ASSISTANT_ENDPOINTS.forEach(({ method, path }) => {
-    it(`${method.toUpperCase()} ${path} returns 401`, async () => {
-      const res = await request(app)[method](path);
+  it('returns 401', async () => {
+    const res = await request(app).post('/api/assistant/chat').send({ message: 'hello' });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /api/assistant/chat — authenticated', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('returns 400 when message field is missing', async () => {
+    const res = await request(app).post('/api/assistant/chat').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/message/);
+  });
+
+  it('returns 400 when message is whitespace only', async () => {
+    const res = await request(app).post('/api/assistant/chat').send({ message: '   ' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/message/);
+  });
+
+  it('returns 400 when message is not a string', async () => {
+    const res = await request(app).post('/api/assistant/chat').send({ message: 42 });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 200 with a non-empty reply string for valid message', async () => {
+    const res = await request(app)
+      .post('/api/assistant/chat')
+      .send({ message: 'Schedule a team meeting tomorrow at 2pm' });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('reply');
+    expect(typeof res.body.reply).toBe('string');
+    expect(res.body.reply.length).toBeGreaterThan(0);
+  });
+
+  it('accepts a minimal one-word message', async () => {
+    const res = await request(app)
+      .post('/api/assistant/chat')
+      .send({ message: 'hi' });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('reply');
+  });
+});
+
+// ── stubs still at 501 ────────────────────────────────────────────────────────
+
+const STUB_ENDPOINTS = [
+  '/api/assistant/parse',
+  '/api/assistant/confirm',
+  '/api/assistant/suggest'
+];
+
+describe('Assistant stubs — unauthenticated', () => {
+  beforeEach(() => { mockIsAuthenticated = false; });
+
+  STUB_ENDPOINTS.forEach(path => {
+    it(`POST ${path} returns 401`, async () => {
+      const res = await request(app).post(path);
       expect(res.status).toBe(401);
     });
   });
 });
 
-describe('Assistant routes — authenticated', () => {
+describe('Assistant stubs — authenticated (not yet implemented)', () => {
   beforeEach(() => { mockIsAuthenticated = true; });
 
-  ASSISTANT_ENDPOINTS.forEach(({ method, path }) => {
-    it(`${method.toUpperCase()} ${path} returns 501`, async () => {
-      const res = await request(app)[method](path);
+  STUB_ENDPOINTS.forEach(path => {
+    it(`POST ${path} returns 501`, async () => {
+      const res = await request(app).post(path);
       expect(res.status).toBe(501);
     });
   });
