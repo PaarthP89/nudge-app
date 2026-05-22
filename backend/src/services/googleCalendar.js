@@ -46,8 +46,35 @@ class GoogleCalendarService {
     return (response.data.items || []).map(normalizeEvent);
   }
 
-  async createEvent(eventData) {
-    throw new Error('not implemented');
+  async createEvent(intent) {
+    const startTime = intent.start_time;
+    let endTime = intent.end_time;
+    if (!endTime && intent.duration_minutes) {
+      endTime = new Date(
+        new Date(startTime).getTime() + intent.duration_minutes * 60 * 1000
+      ).toISOString();
+    }
+    if (!endTime) {
+      endTime = new Date(new Date(startTime).getTime() + 3600 * 1000).toISOString();
+    }
+
+    const resource = {
+      summary: intent.title || 'New Event',
+      start: { dateTime: startTime },
+      end: { dateTime: endTime }
+    };
+    if (intent.location) resource.location = intent.location;
+    const emailAttendees = (intent.attendees || []).filter(a => a.includes('@'));
+    if (emailAttendees.length > 0) {
+      resource.attendees = emailAttendees.map(email => ({ email }));
+    }
+
+    const response = await this.calendar.events.insert({
+      calendarId: 'primary',
+      resource,
+      sendUpdates: 'none'
+    });
+    return normalizeEvent(response.data);
   }
 
   async updateEvent(eventId, updates) {
@@ -63,5 +90,22 @@ class GoogleCalendarService {
   }
 }
 
+function detectConflicts(events, intent) {
+  if (!intent.start_time || intent.action !== 'create') return [];
+
+  const intentStart = new Date(intent.start_time).getTime();
+  const intentEnd = intent.end_time
+    ? new Date(intent.end_time).getTime()
+    : intentStart + (intent.duration_minutes ?? 60) * 60 * 1000;
+
+  return events.filter(event => {
+    if (event.allDay) return false;
+    const eventStart = new Date(event.start).getTime();
+    const eventEnd = new Date(event.end).getTime();
+    return eventStart < intentEnd && eventEnd > intentStart;
+  });
+}
+
 module.exports = GoogleCalendarService;
 module.exports.normalizeEvent = normalizeEvent;
+module.exports.detectConflicts = detectConflicts;

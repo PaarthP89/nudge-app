@@ -171,3 +171,170 @@
   background: #d1d5db;
   cursor: not-allowed;
 }
+
+/* ─── Intent card ─────────────────────────────────────────────────────────── */
+
+.intent-card {
+  margin-top: 8px;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid #e5e7eb;
+}
+
+.intent-row {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.intent-label {
+  color: #9ca3af;
+  font-weight: 600;
+  min-width: 56px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+  font-size: 10px;
+  padding-top: 1px;
+}
+
+.intent-value {
+  color: #111827;
+  word-break: break-word;
+}
+
+.intent-confidence {
+  margin-top: 4px;
+  font-size: 10px;
+  color: #9ca3af;
+  text-align: right;
+}
+
+/* ─── Conflict card ───────────────────────────────────────────────────────── */
+
+.conflict-card {
+  margin-top: 8px;
+  background: #fffbeb;
+  border: 1px solid #fbbf24;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.conflict-header {
+  font-size: 10px;
+  font-weight: 700;
+  color: #92400e;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.conflict-event {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.conflict-event-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.conflict-event-time {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+/* ─── Confirm card ────────────────────────────────────────────────────────── */
+
+.confirm-card {
+  margin-top: 8px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.confirm-prompt {
+  margin: 0;
+  font-size: 12px;
+  color: #374151;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.confirm-btn {
+  border: none;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.confirm-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.confirm-btn--primary {
+  background: #1d4ed8;
+  color: #fff;
+}
+
+.confirm-btn--primary:hover:not(:disabled) {
+  background: #1e40af;
+}
+
+.confirm-btn--warn {
+  background: #d97706;
+}
+
+.confirm-btn--warn:hover:not(:disabled) {
+  background: #b45309;
+}
+
+.confirm-btn--cancel {
+  background: transparent;
+  color: #6b7280;
+  padding: 5px 8px;
+}
+
+.confirm-btn--cancel:hover:not(:disabled) {
+  color: #374151;
+}
+
+.confirm-card--done {
+  color: #166534;
+  background: #f0fdf4;
+  border-color: #86efac;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.confirm-card--cancelled {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.confirm-card--error {
+  color: #dc2626;
+  background: #fef2f2;
+  border-color: #fca5a5;
+  font-size: 12px;
+}

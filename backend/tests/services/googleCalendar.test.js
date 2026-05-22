@@ -1,4 +1,4 @@
-const { normalizeEvent } = require('../../src/services/googleCalendar');
+const { normalizeEvent, detectConflicts } = require('../../src/services/googleCalendar');
 
 describe('normalizeEvent — timed events', () => {
   it('normalizes a standard timed event', () => {
@@ -117,5 +117,88 @@ describe('normalizeEvent — edge cases', () => {
     expect(result.description).toBeNull();
     expect(result.colorId).toBeNull();
     expect(result.recurringEventId).toBeNull();
+  });
+});
+
+// ── detectConflicts ────────────────────────────────────────────────────────────
+
+function makeTimedEvent(start, end, id = 'e1') {
+  return {
+    id, title: 'Existing', start, end, allDay: false,
+    location: null, description: null, colorId: null,
+    attendees: [], status: 'confirmed', recurringEventId: null
+  };
+}
+
+describe('detectConflicts', () => {
+  const baseIntent = {
+    action: 'create',
+    start_time: '2026-05-23T09:00:00Z',
+    end_time: '2026-05-23T10:00:00Z',
+    duration_minutes: 60
+  };
+
+  it('returns [] when events list is empty', () => {
+    expect(detectConflicts([], baseIntent)).toEqual([]);
+  });
+
+  it('returns [] when intent action is not create', () => {
+    const event = makeTimedEvent('2026-05-23T09:00:00Z', '2026-05-23T10:00:00Z');
+    expect(detectConflicts([event], { ...baseIntent, action: 'query' })).toEqual([]);
+  });
+
+  it('returns [] when intent has no start_time', () => {
+    const event = makeTimedEvent('2026-05-23T09:00:00Z', '2026-05-23T10:00:00Z');
+    expect(detectConflicts([event], { ...baseIntent, start_time: null })).toEqual([]);
+  });
+
+  it('detects overlap when event and intent windows intersect', () => {
+    const event = makeTimedEvent('2026-05-23T08:30:00Z', '2026-05-23T09:30:00Z');
+    expect(detectConflicts([event], baseIntent)).toHaveLength(1);
+  });
+
+  it('no conflict when event ends exactly at intent start', () => {
+    const event = makeTimedEvent('2026-05-23T08:00:00Z', '2026-05-23T09:00:00Z');
+    expect(detectConflicts([event], baseIntent)).toHaveLength(0);
+  });
+
+  it('no conflict when event starts exactly at intent end', () => {
+    const event = makeTimedEvent('2026-05-23T10:00:00Z', '2026-05-23T11:00:00Z');
+    expect(detectConflicts([event], baseIntent)).toHaveLength(0);
+  });
+
+  it('detects conflict when event fully contains the intent window', () => {
+    const event = makeTimedEvent('2026-05-23T08:00:00Z', '2026-05-23T12:00:00Z');
+    expect(detectConflicts([event], baseIntent)).toHaveLength(1);
+  });
+
+  it('detects conflict when intent fully contains the event window', () => {
+    const event = makeTimedEvent('2026-05-23T09:15:00Z', '2026-05-23T09:45:00Z');
+    expect(detectConflicts([event], baseIntent)).toHaveLength(1);
+  });
+
+  it('returns multiple conflicting events', () => {
+    const events = [
+      makeTimedEvent('2026-05-23T09:00:00Z', '2026-05-23T09:30:00Z', 'e1'),
+      makeTimedEvent('2026-05-23T09:15:00Z', '2026-05-23T10:15:00Z', 'e2')
+    ];
+    expect(detectConflicts(events, baseIntent)).toHaveLength(2);
+  });
+
+  it('skips all-day events', () => {
+    const allDay = { ...makeTimedEvent('2026-05-23', '2026-05-24'), allDay: true };
+    expect(detectConflicts([allDay], baseIntent)).toHaveLength(0);
+  });
+
+  it('infers end time from duration_minutes when end_time is null', () => {
+    const event = makeTimedEvent('2026-05-23T09:30:00Z', '2026-05-23T10:30:00Z');
+    const intent = { ...baseIntent, end_time: null, duration_minutes: 60 };
+    expect(detectConflicts([event], intent)).toHaveLength(1);
+  });
+
+  it('falls back to 60-minute window when both end_time and duration_minutes are absent', () => {
+    const event = makeTimedEvent('2026-05-23T09:30:00Z', '2026-05-23T10:30:00Z');
+    const intent = { ...baseIntent, end_time: null, duration_minutes: null };
+    expect(detectConflicts([event], intent)).toHaveLength(1);
   });
 });

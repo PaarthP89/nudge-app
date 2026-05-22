@@ -7,7 +7,7 @@ function makeMessage(role, content, type = 'text', payload = null) {
     role,    // 'user' | 'assistant'
     type,    // 'text' | 'intent' | 'confirm' | 'conflict' | 'alternatives'
     content,
-    payload, // structured data for future rich message types
+    payload, // structured data for rich message types
     timestamp: new Date()
   };
 }
@@ -22,6 +22,22 @@ export default function useChat() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  const confirmEvent = useCallback(async (intent) => {
+    try {
+      const res = await axios.post(
+        '/api/assistant/confirm',
+        { intent },
+        { withCredentials: true }
+      );
+      return { success: true, event: res.data.event };
+    } catch (err) {
+      return {
+        success: false,
+        error: err.response?.data?.error || 'Failed to create event.'
+      };
+    }
+  }, []);
+
   const sendMessage = useCallback(async (text) => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -32,14 +48,34 @@ export default function useChat() {
 
     try {
       const res = await axios.post(
-        '/api/assistant/chat',
+        '/api/assistant/parse',
         { message: trimmed },
         { withCredentials: true }
       );
-      setMessages(prev => [...prev, makeMessage('assistant', res.data.reply)]);
+      const { intent, reply, conflicts } = res.data;
+      const newMessages = [makeMessage('assistant', reply, 'intent', intent)];
+
+      const hasConflicts = conflicts?.length > 0;
+      if (hasConflicts) {
+        const count = conflicts.length;
+        const blurb = count === 1
+          ? 'Heads up — there\'s already an event in that time slot.'
+          : `Heads up — there are ${count} events in that time slot.`;
+        newMessages.push(makeMessage('assistant', blurb, 'conflict', conflicts));
+      }
+
+      if (intent.action === 'create' && intent.start_time && intent.confidence >= 0.5) {
+        newMessages.push(makeMessage('assistant', '', 'confirm', { intent, hasConflicts }));
+      }
+
+      setMessages(prev => [...prev, ...newMessages]);
     } catch (err) {
       if (err.response?.status === 401) {
         setError('Session expired. Please log in again.');
+      } else if (err.response?.status === 429) {
+        setError('Rate limit reached — please wait a moment and try again.');
+      } else if (err.response?.status === 400) {
+        setError(err.response.data?.error || 'Invalid request.');
       } else {
         setError('Something went wrong. Please try again.');
       }
@@ -48,5 +84,5 @@ export default function useChat() {
     }
   }, []);
 
-  return { messages, loading, error, sendMessage };
+  return { messages, loading, error, sendMessage, confirmEvent };
 }
