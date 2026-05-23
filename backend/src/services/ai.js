@@ -60,7 +60,7 @@ Action mapping examples — natural language varies widely, map it correctly:
 }
 
 // Strips optional markdown code fences, parses JSON, validates shape.
-function normalizeClaudeResponse(rawText) {
+function normalizeAIResponse(rawText) {
   let text = rawText.trim();
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
 
@@ -110,7 +110,6 @@ function buildIntentReply(intent) {
       return `Got it — I'll schedule "${intent.title}". Checking for conflicts now!`;
     }
 
-    // Build the question based on what's missing
     if (hasDate && hasTime && !hasTitle) {
       const d = new Date(intent.start_time);
       const when = d.toLocaleString(undefined, {
@@ -138,7 +137,6 @@ function buildIntentReply(intent) {
     if (!hasDate && !hasTime && hasTitle) {
       return `Got "${intent.title}" — when should I schedule it?`;
     }
-    // Nothing known
     return "What would you like to schedule, and when?";
   }
 
@@ -161,7 +159,7 @@ function buildIntentReply(intent) {
 
 // ─── Service class ────────────────────────────────────────────────────────────
 
-class ClaudeService {
+class AIService {
   constructor() {
     this.groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
     this.modelName = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
@@ -179,7 +177,7 @@ class ClaudeService {
     });
     const rawText = completion.choices[0].message.content;
     try {
-      return normalizeClaudeResponse(rawText);
+      return normalizeAIResponse(rawText);
     } catch (err) {
       if (err instanceof SyntaxError || err.message?.startsWith('AI response')) {
         return {
@@ -190,10 +188,6 @@ class ClaudeService {
       }
       throw err;
     }
-  }
-
-  async generateResponse(intent, conflicts) {
-    throw new Error('not implemented');
   }
 
   async suggestSlots(intent, conflicts) {
@@ -255,7 +249,7 @@ Suggest 3 other time slots on the same day, avoiding those conflicts.`;
     });
     const rawText = completion.choices[0].message.content;
     try {
-      return normalizeClaudeResponse(rawText);
+      return normalizeAIResponse(rawText);
     } catch (err) {
       if (err instanceof SyntaxError || err.message?.startsWith('AI response')) {
         return {
@@ -269,7 +263,7 @@ Suggest 3 other time slots on the same day, avoiding those conflicts.`;
   }
 }
 
-module.exports = ClaudeService;
+module.exports = AIService;
 module.exports.buildParsePrompt = buildParsePrompt;
-module.exports.normalizeClaudeResponse = normalizeClaudeResponse;
+module.exports.normalizeAIResponse = normalizeAIResponse;
 module.exports.buildIntentReply = buildIntentReply;

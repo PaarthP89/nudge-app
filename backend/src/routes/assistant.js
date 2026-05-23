@@ -1,6 +1,6 @@
 const express = require('express');
 const requireAuth = require('../middleware/requireAuth');
-const ClaudeService = require('../services/claude');
+const AIService = require('../services/ai');
 const GoogleCalendarService = require('../services/googleCalendar');
 const GmailService = require('../services/gmail');
 const { detectConflicts } = GoogleCalendarService;
@@ -49,7 +49,7 @@ async function runParse(req, res, next) {
     if (!message) return;
 
     const history = validateHistory(req.body.history);
-    const service = new ClaudeService();
+    const service = new AIService();
 
     let intent;
     if (history.length > 0) {
@@ -70,7 +70,7 @@ async function runParse(req, res, next) {
       if (intent.action !== 'unknown') intent.confidence = Math.max(intent.confidence, 0.5);
     }
 
-    let reply = ClaudeService.buildIntentReply(intent);
+    let reply = AIService.buildIntentReply(intent);
 
     let conflicts = [];
     let suggestions = [];

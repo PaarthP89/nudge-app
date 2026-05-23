@@ -24,7 +24,7 @@ jest.mock('passport', () => ({
   deserializeUser: jest.fn()
 }));
 
-jest.mock('../../src/services/claude', () => {
+jest.mock('../../src/services/ai', () => {
   const MockService = jest.fn();
   MockService.buildIntentReply = jest.fn();
   return MockService;
@@ -44,7 +44,7 @@ jest.mock('../../src/services/gmail', () => {
 });
 
 const app = require('../../src/app');
-const ClaudeService = require('../../src/services/claude');
+const AIService = require('../../src/services/ai');
 const GoogleCalendarService = require('../../src/services/googleCalendar');
 const GmailService = require('../../src/services/gmail');
 
@@ -66,15 +66,15 @@ beforeEach(() => {
   const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
   const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
   const suggestSlotsMock = jest.fn().mockResolvedValue([]);
-  ClaudeService.mockImplementation(() => ({
+  AIService.mockImplementation(() => ({
     parseIntent: parseIntentMock,
     chat: chatMock,
     suggestSlots: suggestSlotsMock
   }));
-  ClaudeService.buildIntentReply.mockReturnValue('Got it — mock reply');
-  ClaudeService._lastParseIntent = parseIntentMock;
-  ClaudeService._lastChat = chatMock;
-  ClaudeService._lastSuggestSlots = suggestSlotsMock;
+  AIService.buildIntentReply.mockReturnValue('Got it — mock reply');
+  AIService._lastParseIntent = parseIntentMock;
+  AIService._lastChat = chatMock;
+  AIService._lastSuggestSlots = suggestSlotsMock;
 
   GoogleCalendarService.mockImplementation(() => ({
     listEvents: jest.fn().mockResolvedValue([]),
@@ -146,17 +146,17 @@ describe('POST /api/assistant/parse — authenticated', () => {
     expect(Array.isArray(res.body.suggestions)).toBe(true);
   });
 
-  it('calls ClaudeService.buildIntentReply with the parsed intent', async () => {
+  it('calls AIService.buildIntentReply with the parsed intent', async () => {
     await request(app)
       .post('/api/assistant/parse')
       .send({ message: 'Book a meeting' });
-    expect(ClaudeService.buildIntentReply).toHaveBeenCalledWith(VALID_INTENT);
+    expect(AIService.buildIntentReply).toHaveBeenCalledWith(VALID_INTENT);
   });
 
   it('uses parseIntent when no history is provided', async () => {
     const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
     const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: parseIntentMock,
       chat: chatMock,
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -171,7 +171,7 @@ describe('POST /api/assistant/parse — authenticated', () => {
   it('uses chat when valid history is provided', async () => {
     const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
     const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: parseIntentMock,
       chat: chatMock,
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -190,7 +190,7 @@ describe('POST /api/assistant/parse — authenticated', () => {
   it('ignores history items with invalid roles', async () => {
     const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
     const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: parseIntentMock,
       chat: chatMock,
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -209,8 +209,8 @@ describe('POST /api/assistant/parse — authenticated', () => {
     expect(roles).not.toContain('system');
   });
 
-  it('propagates ClaudeService errors to the error handler', async () => {
-    ClaudeService.mockImplementation(() => ({
+  it('propagates AIService errors to the error handler', async () => {
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockRejectedValue(new Error('Claude API down')),
       chat: jest.fn().mockRejectedValue(new Error('Claude API down')),
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -317,7 +317,7 @@ describe('POST /api/assistant/parse — conflict detection', () => {
       { start_time: '2026-05-23T14:00:00Z', end_time: '2026-05-23T14:30:00Z', label: '2:00 PM – 2:30 PM' },
     ];
     const suggestSlotsMock = jest.fn().mockResolvedValue(mockSuggestions);
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
       chat: jest.fn().mockResolvedValue(VALID_INTENT),
       suggestSlots: suggestSlotsMock
@@ -333,7 +333,7 @@ describe('POST /api/assistant/parse — conflict detection', () => {
   });
 
   it('returns empty suggestions if suggestSlots fails (non-fatal)', async () => {
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
       chat: jest.fn().mockResolvedValue(VALID_INTENT),
       suggestSlots: jest.fn().mockRejectedValue(new Error('AI error'))
@@ -351,7 +351,7 @@ describe('POST /api/assistant/parse — conflict detection', () => {
   it('skips conflict check when action is unknown', async () => {
     const listEvents = jest.fn().mockResolvedValue([]);
     GoogleCalendarService.mockImplementation(() => ({ listEvents }));
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'unknown', date_known: false, start_time: null }),
       chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'unknown', date_known: false, start_time: null }),
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -367,7 +367,7 @@ describe('POST /api/assistant/parse — conflict detection', () => {
     const queryEvent = { ...CONFLICT_EVENT, id: 'qev-1', title: 'Team lunch' };
     const listEvents = jest.fn().mockResolvedValue([queryEvent]);
     GoogleCalendarService.mockImplementation(() => ({ listEvents }));
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'query' }),
       chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'query' }),
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -384,7 +384,7 @@ describe('POST /api/assistant/parse — conflict detection', () => {
   it('skips calendar call when start_time is null', async () => {
     const listEvents = jest.fn().mockResolvedValue([]);
     GoogleCalendarService.mockImplementation(() => ({ listEvents }));
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, start_time: null }),
       chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, start_time: null }),
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -431,7 +431,7 @@ describe('POST /api/assistant/parse — delete candidate search', () => {
   });
 
   it('returns matching candidates when events found', async () => {
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
       chat: jest.fn().mockResolvedValue(DELETE_INTENT),
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -448,7 +448,7 @@ describe('POST /api/assistant/parse — delete candidate search', () => {
   });
 
   it('returns empty candidates and "not found" reply when no events match', async () => {
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
       chat: jest.fn().mockResolvedValue(DELETE_INTENT),
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -465,7 +465,7 @@ describe('POST /api/assistant/parse — delete candidate search', () => {
   });
 
   it('caps candidates at 3 even when more events exist', async () => {
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue({ ...DELETE_INTENT, title: null }),
       chat: jest.fn().mockResolvedValue({ ...DELETE_INTENT, title: null }),
       suggestSlots: jest.fn().mockResolvedValue([])
@@ -484,7 +484,7 @@ describe('POST /api/assistant/parse — delete candidate search', () => {
   });
 
   it('overrides reply with confirmation prompt when 1 candidate found', async () => {
-    ClaudeService.mockImplementation(() => ({
+    AIService.mockImplementation(() => ({
       parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
       chat: jest.fn().mockResolvedValue(DELETE_INTENT),
       suggestSlots: jest.fn().mockResolvedValue([])
