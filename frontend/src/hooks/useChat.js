@@ -91,6 +91,20 @@ export default function useChat() {
 
   // Accumulates scheduling info across turns. Cleared only on successful confirm.
   const draftRef = useRef(null);
+  // Tracks conversation turns for AI context — appended each turn, capped at 10.
+  const historyRef = useRef([]);
+
+  const confirmDelete = useCallback(async (eventId) => {
+    try {
+      await axios.delete(`/api/calendar/events/${eventId}`, { withCredentials: true });
+      draftRef.current = null;
+      historyRef.current = [];
+      setTimeout(() => window.dispatchEvent(new CustomEvent('nudge:event-deleted')), 500);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.response?.data?.error || 'Failed to delete event.' };
+    }
+  }, []);
 
   const confirmEvent = useCallback(async (intent) => {
     try {
@@ -101,7 +115,11 @@ export default function useChat() {
       );
       draftRef.current = null;
       setTimeout(() => window.dispatchEvent(new CustomEvent('nudge:event-created')), 500);
-      return { success: true, event: res.data.event };
+      return {
+        success: true,
+        event: res.data.event,
+        invitesSent: res.data.invitesSent || []
+      };
     } catch (err) {
       return {
         success: false,
@@ -110,26 +128,76 @@ export default function useChat() {
     }
   }, []);
 
+  const pickSuggestion = useCallback((suggestion, baseIntent) => {
+    if (!baseIntent) return;
+    const updatedDraft = {
+      ...baseIntent,
+      start_time: suggestion.start_time,
+      end_time: suggestion.end_time,
+      time_known: true,
+      date_known: true,
+    };
+    draftRef.current = updatedDraft;
+
+    const d = new Date(suggestion.start_time);
+    const timeStr = d.toLocaleString(undefined, {
+      weekday: 'short', month: 'short', day: 'numeric',
+      hour: 'numeric', minute: '2-digit'
+    });
+
+    setMessages(prev => [
+      ...prev,
+      makeMessage('assistant', `Switched to ${timeStr} — ready to schedule?`, 'intent', updatedDraft),
+      makeMessage('assistant', '', 'confirm', { intent: updatedDraft, hasConflicts: false })
+    ]);
+  }, []);
+
+  const CANCEL_RE = /^(nevermind|never mind|cancel|stop|forget it|abort|reset|nope|no thanks|start over)\.?!?$/i;
+
   const sendMessage = useCallback(async (text) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
     setMessages(prev => [...prev, makeMessage('user', trimmed)]);
+
+    // Handle abort phrases without calling the AI — prevents draft context from confusing the model.
+    if (CANCEL_RE.test(trimmed)) {
+      draftRef.current = null;
+      historyRef.current = [];
+      setMessages(prev => [
+        ...prev,
+        makeMessage('assistant', "No problem — starting fresh. What would you like to schedule?")
+      ]);
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     const messageToSend = withDraftContext(trimmed, draftRef.current);
+    const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const clientNow = new Date().toLocaleString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+    }); // e.g. "Friday, May 22, 2026 at 8:09 PM PDT" — unambiguously local
 
     try {
       const res = await axios.post(
         '/api/assistant/parse',
-        { message: messageToSend },
+        { message: messageToSend, history: historyRef.current, now: clientNow, timezone: clientTimezone },
         { withCredentials: true }
       );
-      const { intent, reply, conflicts } = res.data;
+      const { intent, reply, conflicts, suggestions, candidates, queryResults } = res.data;
 
       const draft = mergeDraft(draftRef.current, intent);
       draftRef.current = draft;
+
+      // Append this turn to history for future AI context
+      historyRef.current = [
+        ...historyRef.current,
+        { role: 'user', content: trimmed },
+        { role: 'assistant', content: reply }
+      ].slice(-10);
 
       const isConversational = draft.action === 'unknown' || draft.confidence < 0.5;
       const newMessages = [
@@ -151,9 +219,10 @@ export default function useChat() {
         const blurb = count === 1
           ? 'Heads up — there\'s already an event in that time slot.'
           : `Heads up — there are ${count} events in that time slot.`;
-        // Pass intent so "Continue anyway" can schedule directly — no second confirm card needed.
+        // Pass intent so "Schedule anyway" can schedule directly — no second confirm card needed.
         newMessages.push(makeMessage('assistant', blurb, 'conflict', {
           conflicts,
+          suggestions: suggestions || [],
           intent: readyToConfirm ? draft : null,
         }));
       }
@@ -161,6 +230,16 @@ export default function useChat() {
       // Only show confirm card when there are no conflicts.
       if (readyToConfirm && !hasConflicts) {
         newMessages.push(makeMessage('assistant', '', 'confirm', { intent: draft, hasConflicts: false }));
+      }
+
+      // Delete confirmation — show found candidates for user to confirm.
+      if (intent.action === 'delete' && candidates?.length > 0) {
+        newMessages.push(makeMessage('assistant', '', 'deleteConfirm', { candidates }));
+      }
+
+      // Query results — show fetched events as a list.
+      if (intent.action === 'query' && queryResults?.length > 0) {
+        newMessages.push(makeMessage('assistant', '', 'queryResult', { events: queryResults }));
       }
 
       setMessages(prev => [...prev, ...newMessages]);
@@ -181,7 +260,8 @@ export default function useChat() {
 
   const cancelDraft = useCallback(() => {
     draftRef.current = null;
+    historyRef.current = [];
   }, []);
 
-  return { messages, loading, error, sendMessage, confirmEvent, cancelDraft };
+  return { messages, loading, error, sendMessage, confirmEvent, confirmDelete, cancelDraft, pickSuggestion };
 }

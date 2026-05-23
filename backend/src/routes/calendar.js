@@ -34,8 +34,16 @@ router.patch('/events/:id', (req, res) => {
   res.status(501).json({ message: 'not implemented' });
 });
 
-router.delete('/events/:id', (req, res) => {
-  res.status(501).json({ message: 'not implemented' });
+router.delete('/events/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { accessToken, refreshToken } = req.user;
+    const service = new GoogleCalendarService(accessToken, refreshToken);
+    await service.deleteEvent(id);
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.get('/freebusy', (req, res) => {

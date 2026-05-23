@@ -246,6 +246,37 @@
   color: #6b7280;
 }
 
+.conflict-suggestions {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.suggestions-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #92400e;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.suggestion-btn {
+  background: #fff;
+  border: 1px solid #d97706;
+  border-radius: 6px;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.suggestion-btn:hover:not(:disabled) { background: #fffbeb; }
+.suggestion-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
 .conflict-actions {
   display: flex;
   gap: 8px;
@@ -360,4 +391,71 @@
   background: #fef2f2;
   border-color: #fca5a5;
   font-size: 12px;
+}
+
+/* ─── Query result card ──────────────────────────────────────────────────── */
+
+.query-result-card {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.query-result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.query-result-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.query-result-time {
+  font-size: 11px;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+/* ─── Delete candidate rows (inside DeleteConfirmCard) ───────────────────── */
+
+.delete-candidate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.delete-candidate-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.delete-candidate-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.delete-candidate-time {
+  font-size: 11px;
+  color: #6b7280;
 }

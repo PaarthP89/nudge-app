@@ -28,9 +28,12 @@ jest.mock('passport', () => {
 });
 
 let mockListEvents = jest.fn();
+let mockDeleteEvent = jest.fn();
+
 jest.mock('../../src/services/googleCalendar', () => {
   return jest.fn().mockImplementation(() => ({
-    listEvents: mockListEvents
+    listEvents: mockListEvents,
+    deleteEvent: mockDeleteEvent
   }));
 });
 
@@ -101,10 +104,48 @@ describe('GET /api/calendar/events — authenticated', () => {
   });
 });
 
+// ── DELETE /api/calendar/events/:id ──────────────────────────────────────────
+
+describe('DELETE /api/calendar/events/:id — unauthenticated', () => {
+  beforeEach(() => { mockIsAuthenticated = false; });
+
+  it('returns 401', async () => {
+    const res = await request(app).delete('/api/calendar/events/ev-123');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('DELETE /api/calendar/events/:id — authenticated', () => {
+  beforeEach(() => {
+    mockIsAuthenticated = true;
+    mockDeleteEvent.mockReset();
+  });
+
+  it('returns 200 with success:true on valid event id', async () => {
+    mockDeleteEvent.mockResolvedValue(undefined);
+    const res = await request(app).delete('/api/calendar/events/ev-123');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+  });
+
+  it('calls deleteEvent with the event id', async () => {
+    mockDeleteEvent.mockResolvedValue(undefined);
+    await request(app).delete('/api/calendar/events/my-event-id');
+    expect(mockDeleteEvent).toHaveBeenCalledWith('my-event-id');
+  });
+
+  it('propagates calendar errors to the error handler', async () => {
+    mockDeleteEvent.mockRejectedValue(new Error('Event not found'));
+    const res = await request(app).delete('/api/calendar/events/ev-999');
+    expect(res.status).toBe(500);
+  });
+});
+
+// ── Stubs ─────────────────────────────────────────────────────────────────────
+
 const STUB_501_ENDPOINTS = [
   { method: 'post', path: '/api/calendar/events' },
   { method: 'patch', path: '/api/calendar/events/123' },
-  { method: 'delete', path: '/api/calendar/events/123' },
   { method: 'get', path: '/api/calendar/freebusy' }
 ];
 

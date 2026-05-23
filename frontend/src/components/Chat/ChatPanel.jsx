@@ -2,9 +2,11 @@ import React, { useState, useRef, useEffect } from 'react';
 import useChat from '../../hooks/useChat';
 import './ChatPanel.css';
 
+function formatTime(dateStr) {
+  return new Date(dateStr).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
 // ─── IntentCard ───────────────────────────────────────────────────────────────
-// Renders the structured scheduling intent extracted by the AI.
-// Only shown when confidence >= 0.5 and action is a real scheduling action.
 
 function formatDuration(mins) {
   const h = Math.floor(mins / 60);
@@ -67,15 +69,21 @@ function formatTimeRange(start, end) {
   return `${startStr} – ${endStr}`;
 }
 
-function ConflictCard({ payload, onConfirm, onCancel }) {
-  const { conflicts, intent } = payload ?? {};
+function ConflictCard({ payload, onConfirm, onCancel, onPickSuggestion }) {
+  const { conflicts, intent, suggestions } = payload ?? {};
   const [status, setStatus] = useState('idle'); // idle | loading | done | error | dismissed
   const [errorMsg, setErrorMsg] = useState(null);
+  const [doneData, setDoneData] = useState(null);
 
   if (!conflicts?.length || status === 'dismissed') return null;
 
   if (status === 'done') {
-    return <div className="confirm-card confirm-card--done">Scheduled! Check your calendar.</div>;
+    const count = doneData?.invitesSent?.length || 0;
+    return (
+      <div className="confirm-card confirm-card--done">
+        Scheduled!{count > 0 ? ` Invites sent to ${count} attendee${count > 1 ? 's' : ''}.` : ' Check your calendar.'}
+      </div>
+    );
   }
   if (status === 'error') {
     return <div className="confirm-card confirm-card--error">{errorMsg}</div>;
@@ -85,7 +93,7 @@ function ConflictCard({ payload, onConfirm, onCancel }) {
     if (!intent) { setStatus('dismissed'); return; }
     setStatus('loading');
     const result = await onConfirm(intent);
-    if (result.success) setStatus('done');
+    if (result.success) { setDoneData(result); setStatus('done'); }
     else { setStatus('error'); setErrorMsg(result.error); }
   }
 
@@ -100,6 +108,21 @@ function ConflictCard({ payload, onConfirm, onCancel }) {
           <span className="conflict-event-time">{formatTimeRange(ev.start, ev.end)}</span>
         </div>
       ))}
+      {suggestions?.length > 0 && (
+        <div className="conflict-suggestions">
+          <div className="suggestions-label">Try one of these instead:</div>
+          {suggestions.map((s, i) => (
+            <button
+              key={i}
+              className="suggestion-btn"
+              onClick={() => onPickSuggestion?.(s, intent)}
+              disabled={status === 'loading'}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="conflict-actions">
         <button
           className="conflict-btn conflict-btn--continue"
@@ -125,12 +148,14 @@ function ConflictCard({ payload, onConfirm, onCancel }) {
 function ConfirmCard({ payload, onConfirm }) {
   const [status, setStatus] = useState('idle'); // idle | loading | done | error | cancelled
   const [errorMsg, setErrorMsg] = useState(null);
+  const [doneData, setDoneData] = useState(null);
   const { intent, hasConflicts } = payload;
 
   async function handleConfirm() {
     setStatus('loading');
     const result = await onConfirm(intent);
     if (result.success) {
+      setDoneData(result);
       setStatus('done');
     } else {
       setStatus('error');
@@ -139,9 +164,10 @@ function ConfirmCard({ payload, onConfirm }) {
   }
 
   if (status === 'done') {
+    const count = doneData?.invitesSent?.length || 0;
     return (
       <div className="confirm-card confirm-card--done">
-        Scheduled! Check your calendar.
+        Scheduled!{count > 0 ? ` Invites sent to ${count} attendee${count > 1 ? 's' : ''}.` : ' Check your calendar.'}
       </div>
     );
   }
@@ -177,15 +203,97 @@ function ConfirmCard({ payload, onConfirm }) {
   );
 }
 
-// ─── MessageBubble ────────────────────────────────────────────────────────────
-// Branches on message.type for extensibility:
-//   'text'         — plain assistant text (welcome, errors)
-//   'intent'       — parsed intent + summary text (this objective)
-//   'confirm'      — confirmation card   (Objective 7, payload = event draft)
-//   'conflict'     — conflict warning    (Objective 6, payload = conflict list)
-//   'alternatives' — slot suggestions   (Phase 2)
+// ─── QueryResultCard ──────────────────────────────────────────────────────────
 
-function MessageBubble({ message, onConfirm, onCancelDraft }) {
+function QueryResultCard({ payload }) {
+  const { events } = payload;
+  if (!events?.length) return null;
+
+  return (
+    <div className="query-result-card">
+      {events.map(ev => (
+        <div key={ev.id} className="query-result-row">
+          <div className="query-result-title">{ev.title}</div>
+          {!ev.allDay && (
+            <div className="query-result-time">
+              {formatTime(ev.start)} – {formatTime(ev.end)}
+            </div>
+          )}
+          {ev.allDay && <div className="query-result-time">All day</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── DeleteConfirmCard ────────────────────────────────────────────────────────
+
+function DeleteConfirmCard({ payload, onConfirmDelete, onCancel }) {
+  const { candidates } = payload;
+  const [status, setStatus] = useState('idle'); // idle | loading | done | error | cancelled
+  const [deletingId, setDeletingId] = useState(null);
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  if (status === 'done') {
+    return <div className="confirm-card confirm-card--done">Deleted! Check your calendar.</div>;
+  }
+  if (status === 'cancelled') {
+    return <div className="confirm-card confirm-card--cancelled">Cancelled.</div>;
+  }
+
+  async function handleDelete(ev) {
+    setDeletingId(ev.id);
+    setStatus('loading');
+    const result = await onConfirmDelete(ev.id);
+    if (result.success) {
+      setStatus('done');
+    } else {
+      setStatus('error');
+      setErrorMsg(result.error);
+      setDeletingId(null);
+    }
+  }
+
+  return (
+    <div className="confirm-card">
+      {candidates.map(ev => (
+        <div key={ev.id} className="delete-candidate-row">
+          <div className="delete-candidate-info">
+            <div className="delete-candidate-title">{ev.title}</div>
+            {!ev.allDay && (
+              <div className="delete-candidate-time">
+                {formatTime(ev.start)} – {formatTime(ev.end)}
+              </div>
+            )}
+          </div>
+          <button
+            className="confirm-btn confirm-btn--warn"
+            onClick={() => handleDelete(ev)}
+            disabled={status === 'loading'}
+          >
+            {deletingId === ev.id && status === 'loading' ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      ))}
+      {status === 'error' && (
+        <div className="confirm-card--error" style={{ fontSize: 12 }}>{errorMsg}</div>
+      )}
+      <div className="confirm-actions">
+        <button
+          className="confirm-btn confirm-btn--cancel"
+          onClick={() => { onCancel?.(); setStatus('cancelled'); }}
+          disabled={status === 'loading'}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── MessageBubble ────────────────────────────────────────────────────────────
+
+function MessageBubble({ message, onConfirm, onConfirmDelete, onCancelDraft, onPickSuggestion }) {
   const isUser = message.role === 'user';
 
   return (
@@ -196,10 +304,25 @@ function MessageBubble({ message, onConfirm, onCancelDraft }) {
           <IntentCard intent={message.payload} />
         )}
         {message.type === 'conflict' && (
-          <ConflictCard payload={message.payload} onConfirm={onConfirm} onCancel={onCancelDraft} />
+          <ConflictCard
+            payload={message.payload}
+            onConfirm={onConfirm}
+            onCancel={onCancelDraft}
+            onPickSuggestion={onPickSuggestion}
+          />
         )}
         {message.type === 'confirm' && (
           <ConfirmCard payload={message.payload} onConfirm={onConfirm} />
+        )}
+        {message.type === 'deleteConfirm' && (
+          <DeleteConfirmCard
+            payload={message.payload}
+            onConfirmDelete={onConfirmDelete}
+            onCancel={onCancelDraft}
+          />
+        )}
+        {message.type === 'queryResult' && (
+          <QueryResultCard payload={message.payload} />
         )}
         <span className="msg-time">
           {message.timestamp.toLocaleTimeString(undefined, {
@@ -227,7 +350,7 @@ function TypingIndicator() {
 
 export default function ChatPanel() {
   const [input, setInput] = useState('');
-  const { messages, loading, error, sendMessage, confirmEvent, cancelDraft } = useChat();
+  const { messages, loading, error, sendMessage, confirmEvent, confirmDelete, cancelDraft, pickSuggestion } = useChat();
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -260,7 +383,14 @@ export default function ChatPanel() {
 
       <div className="chat-messages">
         {messages.map(msg => (
-          <MessageBubble key={msg.id} message={msg} onConfirm={confirmEvent} onCancelDraft={cancelDraft} />
+          <MessageBubble
+            key={msg.id}
+            message={msg}
+            onConfirm={confirmEvent}
+            onConfirmDelete={confirmDelete}
+            onCancelDraft={cancelDraft}
+            onPickSuggestion={pickSuggestion}
+          />
         ))}
         {loading && <TypingIndicator />}
         {error && <div className="chat-error">{error}</div>}

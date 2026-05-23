@@ -24,7 +24,6 @@ jest.mock('passport', () => ({
   deserializeUser: jest.fn()
 }));
 
-// Mock ClaudeService — factory runs at hoist time so we attach mocks to the class itself
 jest.mock('../../src/services/claude', () => {
   const MockService = jest.fn();
   MockService.buildIntentReply = jest.fn();
@@ -38,9 +37,16 @@ jest.mock('../../src/services/googleCalendar', () => {
   return MockCalendar;
 });
 
+jest.mock('../../src/services/gmail', () => {
+  return jest.fn().mockImplementation(() => ({
+    sendInvite: jest.fn().mockResolvedValue(undefined)
+  }));
+});
+
 const app = require('../../src/app');
 const ClaudeService = require('../../src/services/claude');
 const GoogleCalendarService = require('../../src/services/googleCalendar');
+const GmailService = require('../../src/services/gmail');
 
 const VALID_INTENT = {
   action: 'create',
@@ -57,11 +63,18 @@ const VALID_INTENT = {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // Default mock implementations
   const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
-  ClaudeService.mockImplementation(() => ({ parseIntent: parseIntentMock }));
+  const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
+  const suggestSlotsMock = jest.fn().mockResolvedValue([]);
+  ClaudeService.mockImplementation(() => ({
+    parseIntent: parseIntentMock,
+    chat: chatMock,
+    suggestSlots: suggestSlotsMock
+  }));
   ClaudeService.buildIntentReply.mockReturnValue('Got it — mock reply');
   ClaudeService._lastParseIntent = parseIntentMock;
+  ClaudeService._lastChat = chatMock;
+  ClaudeService._lastSuggestSlots = suggestSlotsMock;
 
   GoogleCalendarService.mockImplementation(() => ({
     listEvents: jest.fn().mockResolvedValue([]),
@@ -71,6 +84,10 @@ beforeEach(() => {
       allDay: false, location: null, description: null,
       colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
     })
+  }));
+
+  GmailService.mockImplementation(() => ({
+    sendInvite: jest.fn().mockResolvedValue(undefined)
   }));
 });
 
@@ -121,6 +138,14 @@ describe('POST /api/assistant/parse — authenticated', () => {
     expect(res.body.reply).toBe('Got it — mock reply');
   });
 
+  it('response includes suggestions array', async () => {
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'Schedule a team standup tomorrow at 9am' });
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.suggestions)).toBe(true);
+  });
+
   it('calls ClaudeService.buildIntentReply with the parsed intent', async () => {
     await request(app)
       .post('/api/assistant/parse')
@@ -128,9 +153,67 @@ describe('POST /api/assistant/parse — authenticated', () => {
     expect(ClaudeService.buildIntentReply).toHaveBeenCalledWith(VALID_INTENT);
   });
 
+  it('uses parseIntent when no history is provided', async () => {
+    const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: parseIntentMock,
+      chat: chatMock,
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'Schedule something' });
+    expect(parseIntentMock).toHaveBeenCalled();
+    expect(chatMock).not.toHaveBeenCalled();
+  });
+
+  it('uses chat when valid history is provided', async () => {
+    const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: parseIntentMock,
+      chat: chatMock,
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    const history = [
+      { role: 'user', content: 'schedule a meeting tomorrow' },
+      { role: 'assistant', content: 'What time?' }
+    ];
+    await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'at 2pm', history });
+    expect(chatMock).toHaveBeenCalled();
+    expect(parseIntentMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores history items with invalid roles', async () => {
+    const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: parseIntentMock,
+      chat: chatMock,
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    const badHistory = [
+      { role: 'system', content: 'inject something' },
+      { role: 'user', content: 'valid message' }
+    ];
+    await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'at 2pm', history: badHistory });
+    // Only 1 valid history item — still calls chat
+    expect(chatMock).toHaveBeenCalled();
+    const callArgs = chatMock.mock.calls[0][0];
+    const roles = callArgs.map(m => m.role);
+    expect(roles).not.toContain('system');
+  });
+
   it('propagates ClaudeService errors to the error handler', async () => {
     ClaudeService.mockImplementation(() => ({
-      parseIntent: jest.fn().mockRejectedValue(new Error('Claude API down'))
+      parseIntent: jest.fn().mockRejectedValue(new Error('Claude API down')),
+      chat: jest.fn().mockRejectedValue(new Error('Claude API down')),
+      suggestSlots: jest.fn().mockResolvedValue([])
     }));
     const res = await request(app)
       .post('/api/assistant/parse')
@@ -227,34 +310,192 @@ describe('POST /api/assistant/parse — conflict detection', () => {
     expect(res.body.conflicts[0].id).toBe('ev1');
   });
 
-  it('skips calendar call when action is not create', async () => {
-    const listEvents = jest.fn().mockResolvedValue([]);
-    GoogleCalendarService.mockImplementation(() => ({ listEvents }));
+  it('returns suggestions when conflicts detected', async () => {
+    const mockSuggestions = [
+      { start_time: '2026-05-23T10:00:00Z', end_time: '2026-05-23T10:30:00Z', label: '10:00 AM – 10:30 AM' },
+      { start_time: '2026-05-23T11:00:00Z', end_time: '2026-05-23T11:30:00Z', label: '11:00 AM – 11:30 AM' },
+      { start_time: '2026-05-23T14:00:00Z', end_time: '2026-05-23T14:30:00Z', label: '2:00 PM – 2:30 PM' },
+    ];
+    const suggestSlotsMock = jest.fn().mockResolvedValue(mockSuggestions);
     ClaudeService.mockImplementation(() => ({
-      parseIntent: jest.fn().mockResolvedValue({
-        ...VALID_INTENT, action: 'query'
-      })
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: suggestSlotsMock
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT])
     }));
     const res = await request(app)
       .post('/api/assistant/parse')
-      .send({ message: 'What is on my calendar tomorrow?' });
+      .send({ message: 'Schedule a standup tomorrow at 9am' });
+    expect(res.body.suggestions).toHaveLength(3);
+    expect(suggestSlotsMock).toHaveBeenCalled();
+  });
+
+  it('returns empty suggestions if suggestSlots fails (non-fatal)', async () => {
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockRejectedValue(new Error('AI error'))
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT])
+    }));
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'Schedule a standup tomorrow at 9am' });
+    expect(res.status).toBe(200);
+    expect(res.body.suggestions).toEqual([]);
+  });
+
+  it('skips conflict check when action is unknown', async () => {
+    const listEvents = jest.fn().mockResolvedValue([]);
+    GoogleCalendarService.mockImplementation(() => ({ listEvents }));
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'unknown', date_known: false, start_time: null }),
+      chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'unknown', date_known: false, start_time: null }),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'hello' });
     expect(res.body.conflicts).toHaveLength(0);
     expect(listEvents).not.toHaveBeenCalled();
+  });
+
+  it('calls listEvents for query action to fetch events', async () => {
+    const queryEvent = { ...CONFLICT_EVENT, id: 'qev-1', title: 'Team lunch' };
+    const listEvents = jest.fn().mockResolvedValue([queryEvent]);
+    GoogleCalendarService.mockImplementation(() => ({ listEvents }));
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'query' }),
+      chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'query' }),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'What do I have tomorrow?' });
+    expect(res.status).toBe(200);
+    expect(listEvents).toHaveBeenCalled();
+    expect(res.body.queryResults).toHaveLength(1);
+    expect(res.body.queryResults[0].id).toBe('qev-1');
   });
 
   it('skips calendar call when start_time is null', async () => {
     const listEvents = jest.fn().mockResolvedValue([]);
     GoogleCalendarService.mockImplementation(() => ({ listEvents }));
     ClaudeService.mockImplementation(() => ({
-      parseIntent: jest.fn().mockResolvedValue({
-        ...VALID_INTENT, start_time: null
-      })
+      parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, start_time: null }),
+      chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, start_time: null }),
+      suggestSlots: jest.fn().mockResolvedValue([])
     }));
     const res = await request(app)
       .post('/api/assistant/parse')
       .send({ message: 'Schedule a meeting' });
     expect(res.body.conflicts).toHaveLength(0);
     expect(listEvents).not.toHaveBeenCalled();
+  });
+});
+
+// ── DELETE candidate search ───────────────────────────────────────────────────
+
+const DELETE_INTENT = {
+  action: 'delete',
+  title: 'Team standup',
+  start_time: '2026-05-23T09:00:00-07:00',
+  end_time: null,
+  duration_minutes: null,
+  attendees: [],
+  location: null,
+  confidence: 0.9,
+  date_known: true,
+  time_known: true,
+};
+
+const EXISTING_EVENT = {
+  id: 'ev-del-1', title: 'Team standup',
+  start: '2026-05-23T09:00:00Z', end: '2026-05-23T09:30:00Z',
+  allDay: false, location: null, description: null,
+  colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+};
+
+describe('POST /api/assistant/parse — delete candidate search', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('returns candidates array in response', async () => {
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'delete my standup tomorrow at 9am' });
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.candidates)).toBe(true);
+  });
+
+  it('returns matching candidates when events found', async () => {
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
+      chat: jest.fn().mockResolvedValue(DELETE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT])
+    }));
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'delete my standup tomorrow at 9am' });
+    expect(res.status).toBe(200);
+    expect(res.body.candidates).toHaveLength(1);
+    expect(res.body.candidates[0].id).toBe('ev-del-1');
+  });
+
+  it('returns empty candidates and "not found" reply when no events match', async () => {
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
+      chat: jest.fn().mockResolvedValue(DELETE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'delete my standup tomorrow at 9am' });
+    expect(res.status).toBe(200);
+    expect(res.body.candidates).toHaveLength(0);
+    expect(res.body.reply).toMatch(/couldn't find/i);
+  });
+
+  it('caps candidates at 3 even when more events exist', async () => {
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue({ ...DELETE_INTENT, title: null }),
+      chat: jest.fn().mockResolvedValue({ ...DELETE_INTENT, title: null }),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    const manyEvents = Array.from({ length: 5 }, (_, i) => ({
+      ...EXISTING_EVENT, id: `ev-${i}`, title: `Meeting ${i}`
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue(manyEvents)
+    }));
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'delete my meeting tomorrow at 9am' });
+    expect(res.status).toBe(200);
+    expect(res.body.candidates.length).toBeLessThanOrEqual(3);
+  });
+
+  it('overrides reply with confirmation prompt when 1 candidate found', async () => {
+    ClaudeService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
+      chat: jest.fn().mockResolvedValue(DELETE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT])
+    }));
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'delete my standup tomorrow at 9am' });
+    expect(res.body.reply).toMatch(/confirm deletion/i);
   });
 });
 
@@ -269,6 +510,11 @@ const VALID_CONFIRM_INTENT = {
   attendees: [],
   location: null,
   confidence: 0.92
+};
+
+const VALID_CONFIRM_INTENT_WITH_ATTENDEES = {
+  ...VALID_CONFIRM_INTENT,
+  attendees: ['alice@example.com', 'bob@example.com']
 };
 
 const CREATED_EVENT = {
@@ -320,6 +566,61 @@ describe('POST /api/assistant/confirm — authenticated', () => {
       .send({ intent: VALID_CONFIRM_INTENT });
     expect(res.status).toBe(201);
     expect(res.body.event).toMatchObject({ id: 'new-ev', title: 'Team standup' });
+  });
+
+  it('returns invitesSent and inviteErrors in response', async () => {
+    GoogleCalendarService.mockImplementation(() => ({
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT)
+    }));
+    const res = await request(app)
+      .post('/api/assistant/confirm')
+      .send({ intent: VALID_CONFIRM_INTENT });
+    expect(res.status).toBe(201);
+    expect(Array.isArray(res.body.invitesSent)).toBe(true);
+    expect(Array.isArray(res.body.inviteErrors)).toBe(true);
+  });
+
+  it('sends email invites to attendees with valid emails', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({ createEvent }));
+    const sendInvite = jest.fn().mockResolvedValue(undefined);
+    GmailService.mockImplementation(() => ({ sendInvite }));
+
+    const res = await request(app)
+      .post('/api/assistant/confirm')
+      .send({ intent: VALID_CONFIRM_INTENT_WITH_ATTENDEES });
+    expect(res.status).toBe(201);
+    expect(sendInvite).toHaveBeenCalledTimes(2);
+    expect(res.body.invitesSent).toEqual(['alice@example.com', 'bob@example.com']);
+    expect(res.body.inviteErrors).toEqual([]);
+  });
+
+  it('skips email invite for attendees without @ in their name', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({ createEvent }));
+    const sendInvite = jest.fn().mockResolvedValue(undefined);
+    GmailService.mockImplementation(() => ({ sendInvite }));
+
+    const res = await request(app)
+      .post('/api/assistant/confirm')
+      .send({ intent: { ...VALID_CONFIRM_INTENT, attendees: ['Bob', 'alice@example.com'] } });
+    expect(res.status).toBe(201);
+    expect(sendInvite).toHaveBeenCalledTimes(1);
+    expect(res.body.invitesSent).toEqual(['alice@example.com']);
+  });
+
+  it('records invite failures in inviteErrors without failing the whole confirm', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({ createEvent }));
+    const sendInvite = jest.fn().mockRejectedValue(new Error('Gmail API error'));
+    GmailService.mockImplementation(() => ({ sendInvite }));
+
+    const res = await request(app)
+      .post('/api/assistant/confirm')
+      .send({ intent: VALID_CONFIRM_INTENT_WITH_ATTENDEES });
+    expect(res.status).toBe(201);
+    expect(res.body.invitesSent).toEqual([]);
+    expect(res.body.inviteErrors).toEqual(['alice@example.com', 'bob@example.com']);
   });
 
   it('calls createEvent with the intent', async () => {

@@ -182,11 +182,14 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: default;
+  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 3px;
+  transition: background 0.1s;
 }
+
+.event-chip:hover { background: #bfdbfe; }
 
 .event-chip.all-day { background: #d1fae5; color: #065f46; }
 
@@ -389,7 +392,7 @@
   padding: 3px 6px;
   overflow: hidden;
   box-sizing: border-box;
-  cursor: default;
+  cursor: pointer;
   z-index: 1;
   min-height: 20px;
 }
@@ -415,3 +418,99 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.week-allday-event {
+  cursor: pointer;
+}
+
+/* ─── Event detail modal ─────────────────────────────────────────────────────── */
+
+.event-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.event-modal {
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.event-modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0;
+}
+
+.event-modal-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.event-modal-row {
+  font-size: 13px;
+  color: #374151;
+  display: flex;
+  gap: 8px;
+}
+
+.event-modal-label {
+  font-weight: 600;
+  color: #6b7280;
+  min-width: 48px;
+  flex-shrink: 0;
+}
+
+.event-modal-error {
+  font-size: 12px;
+  color: #dc2626;
+}
+
+.event-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.event-modal-close {
+  background: none;
+  color: #6b7280;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.event-modal-close:hover:not(:disabled) { background: #f3f4f6; }
+.event-modal-close:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.event-modal-delete {
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.event-modal-delete:hover:not(:disabled) { background: #b91c1c; }
+.event-modal-delete:disabled { opacity: 0.55; cursor: not-allowed; }

@@ -3,11 +3,17 @@ const Groq = require('groq-sdk');
 // ─── Pure helpers (exported for unit testing) ─────────────────────────────────
 
 function buildParsePrompt(now, timezone) {
-  return `You are a scheduling intent parser for a calendar assistant called Nudge.
-Extract scheduling intent from the user's natural language message and return ONLY a valid JSON object — no markdown, no code fences, no explanation.
+  return `You are an intent parser for Nudge, an AI calendar assistant. Your job is to classify what the user wants to do with their calendar and extract the relevant details. Return ONLY a valid JSON object — no markdown, no code fences, no explanation.
 
 Current date/time: ${now}
 User's timezone: ${timezone}
+
+Valid actions:
+- "create"  — user wants to schedule, add, or book a new event
+- "delete"  — user wants to remove, cancel, or delete an existing event
+- "update"  — user wants to move, reschedule, or change an existing event
+- "query"   — user wants to know what is on their calendar
+- "unknown" — message has nothing to do with calendar management
 
 Return this exact JSON schema (all fields required):
 {
@@ -24,16 +30,33 @@ Return this exact JSON schema (all fields required):
 }
 
 Rules:
-- date_known: true ONLY if user explicitly mentioned a specific day/date ("tomorrow", "Friday", "May 23", "next week"). False otherwise.
-- time_known: true ONLY if user explicitly mentioned a specific clock time ("at 2pm", "10:30am", "noon", "midnight"). False otherwise.
+- date_known: true ONLY if user explicitly mentioned a specific day/date ("tomorrow", "Sunday", "May 23", "next week"). False otherwise.
+- time_known: true ONLY if user explicitly mentioned a specific clock time ("at 2pm", "10:30am", "noon"). False otherwise.
 - start_time: set to the resolved ISO datetime (with timezone offset) when date_known is true. If time_known is false, use midnight (T00:00:00) on that date as a placeholder. Set null if date_known is false.
 - end_time: set only when explicitly stated. Include timezone offset.
-- confidence: >= 0.8 only when action, title, date_known, and time_known are all true. <= 0.4 when multiple key details are missing.
-- Set action to "unknown" if this is not a scheduling request.
-- Resolve relative dates ("tomorrow", "next Friday") using the current date/time provided.
+- confidence for "create": >= 0.8 requires title + date_known + time_known. <= 0.4 when multiple details are missing.
+- confidence for "delete" / "update": >= 0.75 when date_known && time_known are both true (title is NOT required — time alone identifies the event). >= 0.5 when only date or title is known.
+- confidence for "query": >= 0.75 when a date or time range is mentioned. >= 0.5 when query is general.
+- Set action to "unknown" ONLY when the message has absolutely nothing to do with calendar management (e.g. "what is 2+2", "tell me a joke").
+- Resolve relative dates ("tomorrow", "next Friday", "Sunday") using the current date/time provided above.
 - attendees: use email addresses if given, otherwise display names.
 - duration_minutes: infer from end_time - start_time if both present, or from an explicit duration like "1 hour".
-- Always include the timezone offset in start_time and end_time (e.g. -04:00 for EDT).`;
+- Always include the timezone offset in start_time and end_time (e.g. -07:00 for PDT).
+
+Action mapping examples — natural language varies widely, map it correctly:
+- "can you delete my meeting tomorrow?" → action: "delete"
+- "remove the 2:30pm call on Sunday" → action: "delete"
+- "cancel my standup Friday at 9am" → action: "delete"
+- "get rid of the dentist appointment" → action: "delete"
+- "what's on my calendar Sunday?" → action: "query"
+- "do I have anything tomorrow afternoon?" → action: "query"
+- "show me my Friday schedule" → action: "query"
+- "what do I have this week?" → action: "query"
+- "move my 3pm to 4pm tomorrow" → action: "update"
+- "reschedule the standup to next Tuesday" → action: "update"
+- "book a 1-hour call with Alice next Monday at noon" → action: "create"
+- "schedule a dentist appointment Thursday at 9am" → action: "create"
+- "set up a team lunch Friday at 12:30" → action: "create"`;
 }
 
 // Strips optional markdown code fences, parses JSON, validates shape.
@@ -69,10 +92,12 @@ function normalizeClaudeResponse(rawText) {
 }
 
 function buildIntentReply(intent) {
-  if (intent.action === 'unknown' || intent.confidence < 0.3) {
+  // For non-create actions a lower confidence bar is fine — even partial info lets us search.
+  const unknownThreshold = intent.action === 'create' ? 0.3 : 0.2;
+  if (intent.action === 'unknown' || intent.confidence < unknownThreshold) {
     return (
-      "I'm not sure what you'd like to schedule. " +
-      'Try something like: "Schedule a 1-hour meeting with Alice tomorrow at 2pm."'
+      "I can help you schedule, delete, or look up calendar events. " +
+      'Try: "Schedule a meeting tomorrow at 2pm" or "Delete my 3pm standup on Friday."'
     );
   }
 
@@ -117,6 +142,19 @@ function buildIntentReply(intent) {
     return "What would you like to schedule, and when?";
   }
 
+  if (intent.action === 'update') {
+    return "Editing events via chat isn't supported yet. To reschedule, delete the event from the calendar and create a new one.";
+  }
+
+  if (intent.action === 'query') {
+    if (intent.date_known && intent.start_time) {
+      const d = new Date(intent.start_time);
+      const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+      return `Let me check your calendar for ${dateStr}…`;
+    }
+    return "Let me check your calendar…";
+  }
+
   const title = intent.title ? `"${intent.title}"` : 'that event';
   return `Got it — I'll ${intent.action} ${title}.`;
 }
@@ -126,7 +164,7 @@ function buildIntentReply(intent) {
 class ClaudeService {
   constructor() {
     this.groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    this.modelName = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+    this.modelName = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
   }
 
   async parseIntent(userInput, { now, timezone }) {
@@ -158,12 +196,76 @@ class ClaudeService {
     throw new Error('not implemented');
   }
 
-  async suggestSlots(constraints, existingEvents) {
-    throw new Error('not implemented');
+  async suggestSlots(intent, conflicts) {
+    const conflictDescriptions = conflicts.map(c => {
+      const s = new Date(c.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      const e = new Date(c.end).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      return `"${c.title}" (${s}–${e})`;
+    }).join(', ');
+
+    const duration = intent.duration_minutes || 60;
+    const intentDate = new Date(intent.start_time);
+    const dateStr = intentDate.toLocaleDateString('en-US', {
+      weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'
+    });
+    const offsetMatch = intent.start_time.match(/([+-]\d{2}:\d{2})$/);
+    const offset = offsetMatch ? offsetMatch[1] : 'Z';
+
+    const systemPrompt = `You are a scheduling assistant. Return ONLY a valid JSON array of exactly 3 alternative time slot objects. No markdown, no explanation.
+Each object must have exactly these fields: { "start_time": "ISO 8601 string with timezone offset ${offset}", "end_time": "ISO 8601 string with same offset", "label": "human-readable range like '2:00 PM – 3:00 PM'" }`;
+
+    const userMsg = `I want to schedule a ${duration}-minute event on ${dateStr}.
+These times are taken: ${conflictDescriptions}
+Suggest 3 other time slots on the same day, avoiding those conflicts.`;
+
+    const completion = await this.groq.chat.completions.create({
+      model: this.modelName,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMsg }
+      ],
+      temperature: 0.3,
+      max_tokens: 400
+    });
+
+    const rawText = completion.choices[0].message.content;
+    let text = rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed.slice(0, 3)
+      .filter(s => s && s.start_time && s.end_time)
+      .map(s => ({
+        start_time: s.start_time,
+        end_time: s.end_time,
+        label: s.label || new Date(s.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+      }));
   }
 
-  async chat(messages, systemContext) {
-    throw new Error('not implemented');
+  async chat(messages, { now, timezone }) {
+    const completion = await this.groq.chat.completions.create({
+      model: this.modelName,
+      messages: [
+        { role: 'system', content: buildParsePrompt(now, timezone) },
+        ...messages
+      ],
+      temperature: 0,
+      max_tokens: 512
+    });
+    const rawText = completion.choices[0].message.content;
+    try {
+      return normalizeClaudeResponse(rawText);
+    } catch (err) {
+      if (err instanceof SyntaxError || err.message?.startsWith('AI response')) {
+        return {
+          action: 'unknown', title: null, start_time: null, end_time: null,
+          duration_minutes: null, attendees: [], location: null, confidence: 0,
+          date_known: false, time_known: false,
+        };
+      }
+      throw err;
+    }
   }
 }
 

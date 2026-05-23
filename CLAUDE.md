@@ -81,16 +81,42 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - Google refresh_token stored in session; googleapis handles access token auto-refresh per request
 
 ## Phase 2: P1 Features (Enhanced UX)
-- [ ] Delete calendar events (deferred — not required for portfolio MVP)
-- [ ] AI rescheduling suggestions (if conflict, suggest alternatives)
-- [ ] Guest email invites via Gmail API
-- [ ] Voice input (Web Speech API)
-- [ ] Chat history / conversation memory (multi-turn context)
+- [x] Delete calendar events — ✓ Complete (2026-05-22)
+  - `GoogleCalendarService.deleteEvent()` calls `calendar.events.delete` with `sendUpdates: 'all'`
+  - `DELETE /api/calendar/events/:id` route implemented
+  - CalendarView: click any event chip/week event → EventDetailModal with title, time, location, attendees + Delete button
+  - Fires `nudge:event-deleted` custom event; useCalendar listens on both create and delete
+  - Chat-based delete: `/parse` searches calendar when action=delete, returns up to 3 candidates
+    - time_known: searches ±30–90 min window; date_known only: searches whole day; title only: searches next 7 days
+    - Title-filtered if AI extracted a title; falls back to all timed events in window
+    - DeleteConfirmCard shown with event title + time + Delete button per candidate
+    - Fires `nudge:event-deleted` and refreshes calendar 500ms after confirm
+    - Reply overridden: "Found X — confirm deletion?" or "couldn't find" message
+- [x] AI rescheduling suggestions — ✓ Complete (2026-05-22)
+  - `ClaudeService.suggestSlots(intent, conflicts)` calls Groq to generate 3 alternative time slots as JSON
+  - `/parse` route calls `suggestSlots` when conflicts detected; returns `suggestions` in response
+  - ConflictCard shows "Try one of these instead:" with clickable slot buttons
+  - Picking a suggestion updates draft with new start/end times and shows ConfirmCard
+- [x] Guest email invites via Gmail API — ✓ Complete (2026-05-22)
+  - `GmailService.sendInvite(to, eventDetails)` sends HTML email via `gmail.users.messages.send`
+  - `/confirm` route sends invites to all attendees with `@` in their address after creating event
+  - Returns `invitesSent` and `inviteErrors` arrays; ConfirmCard success shows invite count
+  - Email includes "Add to Google Calendar" button (pre-filled template URL)
+- [x] Chat history / conversation memory — ✓ Complete (2026-05-22)
+  - `ClaudeService.chat(messages, context)` accepts full message history + system prompt
+  - `/parse` route accepts `history` array (sanitized: valid roles, ≤10 turns, ≤500 chars each)
+  - Uses `chat()` when history provided, `parseIntent()` otherwise
+  - Frontend `useChat.js` maintains `historyRef` (capped at 10 turns) and sends with each request
+  - Frontend sends local datetime + timezone with every request (prevents UTC date-shift bugs)
+  - Abort phrases (nevermind, cancel, stop, etc.) handled client-side — clear draft + history without hitting AI
 
 ## Phase 3: P2 Features (Polish)
 - [ ] Event detail sidebar / click to edit
 - [ ] Smart time suggestions (AI finds optimal slots)
 - [ ] Meeting prep summaries (pre-event briefing)
+
+## Phase 4: Voice Input
+- [ ] Voice input (Web Speech API) — browser-native speech-to-text, no API cost
 
 ## API Endpoints (Express)
 

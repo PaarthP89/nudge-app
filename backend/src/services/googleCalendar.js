@@ -82,7 +82,11 @@ class GoogleCalendarService {
   }
 
   async deleteEvent(eventId) {
-    throw new Error('not implemented');
+    await this.calendar.events.delete({
+      calendarId: 'primary',
+      eventId,
+      sendUpdates: 'all',
+    });
   }
 
   async getFreeBusy(startDate, endDate) {

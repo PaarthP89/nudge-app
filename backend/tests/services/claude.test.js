@@ -159,12 +159,12 @@ describe('buildIntentReply', () => {
 
   it('returns clarification when action is unknown', () => {
     const reply = buildIntentReply({ ...full, action: 'unknown' });
-    expect(reply).toMatch(/not sure/i);
+    expect(reply).toMatch(/schedule|delete|calendar/i);
   });
 
   it('returns clarification when confidence is very low', () => {
     const reply = buildIntentReply({ ...full, action: 'unknown', confidence: 0.1 });
-    expect(reply).toMatch(/not sure/i);
+    expect(reply).toMatch(/schedule|delete|calendar/i);
   });
 
   it('handles non-create actions', () => {
