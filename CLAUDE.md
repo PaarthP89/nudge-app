@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 1 complete (2026-05-22). All MVP features working: multi-turn chat with draft accumulation, date/time/title state machine, conflict detection with Continue/Cancel, confirmation, event creation, calendar grid (month/week) with auto-refresh, and 30-day persistent sessions.
+**Status:** Phase 2 complete (2026-05-22). All MVP + enhanced UX features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, and 30-day persistent sessions.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -13,18 +13,18 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 ### Frontend
 - **React (Vite)** — calendar grid, chat UI, voice input
-- **Web Speech API** — browser-native speech-to-text for voice input
+- **Web Speech API** — browser-native speech-to-text for voice input (Phase 4)
 
 ### Backend
 - **Node.js + Express** — REST API, session management, OAuth proxy
 - **express-session** — session management
 - **Passport.js** — Google OAuth 2.0 authentication
-- **Testing:** Jest, Supertest, or similar for API tests
+- **Testing:** Jest + Supertest (106 tests passing)
 
 ### AI & External Services
-- **Groq SDK (llama-3.1-8b-instant)** — intent parsing, conflict resolution, rescheduling suggestions (switched from Claude API; free tier, 30 RPM)
-- **Google Calendar API v3** — read/write events
-- **Gmail API** — send invite emails
+- **Groq SDK (llama-3.3-70b-versatile)** — intent parsing, conflict resolution, rescheduling suggestions (free tier, 30 RPM). Model is configurable via `GROQ_MODEL` env var. Service abstracted as `AIService` — swap provider by editing `src/services/ai.js` only.
+- **Google Calendar API v3** — read/write/delete events
+- **Gmail API** — send invite emails with "Add to Google Calendar" button
 - **Google OAuth 2.0** — authentication with calendar + Gmail scopes
 
 ### Deployment (Later)
@@ -38,10 +38,10 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - **Iterative phases:** Phase 1 (P0 features) → Phase 2 (P1 features) → Phase 3 (P2 features)
 
 ## Phase 1: Core P0 Features (MVP)
-- [x] Project setup (repo, frontend/backend structure) — ✓ Scaffolding complete (2026-05-21)
+- [x] Project setup (repo, frontend/backend structure) — ✓ Complete (2026-05-21)
   - Express backend with auth, calendar, assistant routes
   - React + Vite frontend with Router, placeholder components
-  - Jest + Supertest tests (88 passing)
+  - Jest + Supertest tests scaffolded
   - Google OAuth, Google Calendar API, Groq API, Gmail API wired
 - [x] Google Calendar OAuth 2.0 login — ✓ Complete (2026-05-21)
   - Passport Google strategy with offline access + refresh token preservation
@@ -53,18 +53,20 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - Today indicator and today button; today circle in date
 - [x] Text-based NL scheduling input (chat interface) — ✓ Complete (2026-05-22)
   - ChatPanel component with message thread, typing indicator, input row
-  - Message type system: text | intent | conflict | confirm | alternatives
+  - Message type system: text | intent | conflict | confirm | deleteConfirm | queryResult
 - [x] AI intent parsing (extract: action, title, attendees, time, duration, location) — ✓ Complete (2026-05-22)
-  - Groq/llama-3.1-8b-instant via AIService (service name preserved for compatibility)
-  - Intent schema includes `date_known` and `time_known` booleans; these are tracked separately so partial info accumulates correctly across turns
-  - IntentCard renders parsed details; WHEN row only shown when `time_known` is true; confidence % hidden
-  - parseIntent catches malformed model output and returns fallback unknown intent (no 500s)
-  - buildIntentReply covers all 8 combinations of missing/present title/date/time and asks for exactly what's missing
+  - Groq via `AIService` (`src/services/ai.js`) — provider-agnostic; swap model via `GROQ_MODEL` env var
+  - Currently using `llama-3.3-70b-versatile` (upgraded from 8b for reliable instruction-following)
+  - Intent schema includes `date_known` and `time_known` booleans; tracked separately so partial info accumulates correctly across turns
+  - `parseIntent` catches malformed model output and returns fallback unknown intent (no 500s)
+  - `buildIntentReply` covers all 8 combinations of missing/present title/date/time and asks for exactly what's missing; handles delete, query, update actions distinctly
   - Conflict check only runs when `date_known && time_known` (never on midnight placeholders)
   - Confirm card only shown when title + date_known + time_known + confidence >= 0.5
-  - Running draft intent (useRef) accumulates fields across turns via mergeDraft(); date+time from separate turns are combined when both eventually known
-  - Draft cleared only on successful confirm; Cancel button on conflict card clears it too (fresh start)
+  - Running draft intent (useRef) accumulates fields across turns via `mergeDraft()`; date+time from separate turns are combined when both eventually known
+  - Draft cleared only on successful confirm or cancel
   - Context injected as compact `[DRAFT:title="x" datetime=...]` prefix — prevents model from misreading label text as event content
+  - System prompt includes concrete action-mapping examples for all 5 action types
+  - Keyword override safety net in route: if model returns `unknown` but message contains clear action keyword (delete/schedule/etc.), action is corrected before downstream logic runs
 - [x] Conflict detection (query existing events, flag overlaps) — ✓ Complete (2026-05-22)
   - `detectConflicts` pure function in googleCalendar.js; skips all-day events
   - Overlap: `eventStart < intentEnd && eventEnd > intentStart`
@@ -84,14 +86,14 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - [x] Delete calendar events — ✓ Complete (2026-05-22)
   - `GoogleCalendarService.deleteEvent()` calls `calendar.events.delete` with `sendUpdates: 'all'`
   - `DELETE /api/calendar/events/:id` route implemented
-  - CalendarView: click any event chip/week event → EventDetailModal with title, time, location, attendees + Delete button
-  - Fires `nudge:event-deleted` custom event; useCalendar listens on both create and delete
+  - CalendarView: click any event chip/week event → EventDetailModal with title, time, location, attendees + Delete button; modal remounts fresh per event (key prop) so state never bleeds between events
   - Chat-based delete: `/parse` searches calendar when action=delete, returns up to 3 candidates
     - time_known: searches ±30–90 min window; date_known only: searches whole day; title only: searches next 7 days
     - Title-filtered if AI extracted a title; falls back to all timed events in window
     - DeleteConfirmCard shown with event title + time + Delete button per candidate
     - Fires `nudge:event-deleted` and refreshes calendar 500ms after confirm
     - Reply overridden: "Found X — confirm deletion?" or "couldn't find" message
+  - Both calendar click and chat delete fire `nudge:event-deleted`; useCalendar listens on both create and delete
 - [x] AI rescheduling suggestions — ✓ Complete (2026-05-22)
   - `AIService.suggestSlots(intent, conflicts)` calls Groq to generate 3 alternative time slots as JSON
   - `/parse` route calls `suggestSlots` when conflicts detected; returns `suggestions` in response
@@ -101,14 +103,19 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - `GmailService.sendInvite(to, eventDetails)` sends HTML email via `gmail.users.messages.send`
   - `/confirm` route sends invites to all attendees with `@` in their address after creating event
   - Returns `invitesSent` and `inviteErrors` arrays; ConfirmCard success shows invite count
-  - Email includes "Add to Google Calendar" button (pre-filled template URL)
+  - Email includes "Add to Google Calendar" button (Google Calendar template URL, pre-filled with event details)
 - [x] Chat history / conversation memory — ✓ Complete (2026-05-22)
   - `AIService.chat(messages, context)` accepts full message history + system prompt
   - `/parse` route accepts `history` array (sanitized: valid roles, ≤10 turns, ≤500 chars each)
   - Uses `chat()` when history provided, `parseIntent()` otherwise
   - Frontend `useChat.js` maintains `historyRef` (capped at 10 turns) and sends with each request
-  - Frontend sends local datetime + timezone with every request (prevents UTC date-shift bugs)
-  - Abort phrases (nevermind, cancel, stop, etc.) handled client-side — clear draft + history without hitting AI
+  - Frontend sends local datetime + timezone string with every request (prevents UTC date-shift bug where server clock misidentifies "tomorrow")
+  - Abort phrases (nevermind, cancel, stop, forget it, start over, etc.) handled client-side — clears draft + history without hitting the AI API
+- [x] Calendar query via chat — ✓ Complete (2026-05-22)
+  - "What's on my calendar Sunday?" / "Do I have anything tomorrow?" → action: query
+  - `/parse` route fetches events for the day when action=query and date_known; returns `queryResults`
+  - QueryResultCard shows each event with title and time range
+  - "Nothing on your calendar for X" reply when day is empty
 
 ## Phase 3: P2 Features (Polish)
 - [ ] Event detail sidebar / click to edit
@@ -128,18 +135,18 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 ### Calendar (all require session auth)
 - `GET /api/calendar/events` — Fetch events for date range
-- `POST /api/calendar/events` — Create event
-- `PATCH /api/calendar/events/:id` — Update event
+- `POST /api/calendar/events` — Create event (stub 501)
+- `PATCH /api/calendar/events/:id` — Update event (stub 501)
 - `DELETE /api/calendar/events/:id` — Delete event
-- `GET /api/calendar/freebusy` — Check free/busy slots
+- `GET /api/calendar/freebusy` — Check free/busy slots (stub 501)
 
 ### AI Assistant (all require session auth)
-- `POST /api/assistant/parse` — Parse NL input → structured intent
-- `POST /api/assistant/confirm` — Execute confirmed intent
-- `POST /api/assistant/chat` — Multi-turn conversation
-- `POST /api/assistant/suggest` — Ask AI for open slot suggestions
+- `POST /api/assistant/parse` — Parse NL input → structured intent + conflicts + candidates + queryResults
+- `POST /api/assistant/confirm` — Execute confirmed create intent; sends email invites
+- `POST /api/assistant/chat` — Alias for /parse (same handler, accepts history)
+- `POST /api/assistant/suggest` — Ask AI for open slot suggestions (stub 501)
 
-## Project Structure (TBD)
+## Project Structure
 ```
 nudge-app/
 ├── backend/
@@ -149,15 +156,20 @@ nudge-app/
 │   │   │   ├── calendar.js
 │   │   │   └── assistant.js
 │   │   ├── middleware/
+│   │   │   └── requireAuth.js
 │   │   ├── services/
+│   │   │   ├── ai.js           ← provider-agnostic AI service (Groq today, swappable)
 │   │   │   ├── googleCalendar.js
-│   │   │   ├── gmail.js
-│   │   │   └── claude.js
-│   │   ├── utils/
+│   │   │   └── gmail.js
 │   │   └── app.js
 │   ├── tests/
 │   │   ├── routes/
+│   │   │   ├── assistant.test.js
+│   │   │   ├── calendar.test.js
+│   │   │   └── auth.test.js
 │   │   ├── services/
+│   │   │   ├── ai.test.js
+│   │   │   └── googleCalendar.test.js
 │   │   └── setup.js
 │   ├── package.json
 │   └── .env.example
@@ -165,10 +177,15 @@ nudge-app/
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── Calendar/
-│   │   │   ├── Chat/
-│   │   │   └── VoiceInput/
+│   │   │   │   ├── CalendarView.jsx
+│   │   │   │   └── CalendarView.css
+│   │   │   └── Chat/
+│   │   │       ├── ChatPanel.jsx
+│   │   │       └── ChatPanel.css
 │   │   ├── pages/
 │   │   ├── hooks/
+│   │   │   ├── useCalendar.js
+│   │   │   └── useChat.js
 │   │   └── App.jsx
 │   ├── package.json
 │   └── vite.config.js
@@ -191,7 +208,7 @@ nudge-app/
 - Production billing or infrastructure
 
 ## Notes for Implementation
-- Use Groq API (llama-3.1-8b-instant) for intent parsing; consider upgrading to a larger model if hallucination on non-scheduling input is a problem
-- Start with in-memory session storage for dev; upgrade to Redis if needed
-- Plan for graceful conflict handling: detection → AI-generated alternatives → user confirmation
-- Voice input is free (Web Speech API) but limited; text input is primary
+- AI service is abstracted in `src/services/ai.js` — to swap providers, only that file needs changes
+- Currently using `llama-3.3-70b-versatile` via Groq; configurable via `GROQ_MODEL` env var
+- Session storage is in-memory for dev; upgrade to Redis if needed for production
+- Voice input (Phase 4) is free via Web Speech API but browser-limited; text input is primary
