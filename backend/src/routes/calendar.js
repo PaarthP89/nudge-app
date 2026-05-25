@@ -30,8 +30,19 @@ router.post('/events', (req, res) => {
   res.status(501).json({ message: 'not implemented' });
 });
 
-router.patch('/events/:id', (req, res) => {
-  res.status(501).json({ message: 'not implemented' });
+router.patch('/events/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    if (!req.body || Object.keys(req.body).length === 0) {
+      return res.status(400).json({ error: 'at least one field to update is required' });
+    }
+    const { accessToken, refreshToken } = req.user;
+    const service = new GoogleCalendarService(accessToken, refreshToken);
+    const event = await service.updateEvent(id, req.body);
+    res.json(event);
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.delete('/events/:id', async (req, res, next) => {

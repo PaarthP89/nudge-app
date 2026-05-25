@@ -83,6 +83,12 @@ beforeEach(() => {
       start: '2026-05-23T09:00:00Z', end: '2026-05-23T09:30:00Z',
       allDay: false, location: null, description: null,
       colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    }),
+    updateEvent: jest.fn().mockResolvedValue({
+      id: 'ev-del-1', title: 'Team standup',
+      start: '2026-05-23T10:00:00Z', end: '2026-05-23T10:30:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
     })
   }));
 
@@ -745,5 +751,261 @@ describe('POST /api/assistant/parse — 3B conflict loop', () => {
     expect(suggestSlotsMock).toHaveBeenCalledTimes(2);
     // Graceful fallback: response must be non-empty (raw suggestions, not an empty array)
     expect(res.body.suggestions.length).toBeGreaterThan(0);
+  });
+});
+
+// ── 3A: batch scheduling ──────────────────────────────────────────────────────
+
+const BATCH_INTENT = {
+  action: 'create',
+  title: 'standup',
+  start_time: '2026-05-25T10:00:00Z',
+  end_time: '2026-05-25T10:30:00Z',
+  duration_minutes: 30,
+  attendees: [],
+  location: null,
+  confidence: 0.9,
+  date_known: true,
+  time_known: true,
+  recurrence: { type: 'weekly', days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'], count: 5 }
+};
+
+const BATCH_INSTANCES = [
+  { title: 'standup', start_time: '2026-05-25T10:00:00Z', end_time: '2026-05-25T10:30:00Z' },
+  { title: 'standup', start_time: '2026-05-26T10:00:00Z', end_time: '2026-05-26T10:30:00Z' },
+  { title: 'standup', start_time: '2026-05-27T10:00:00Z', end_time: '2026-05-27T10:30:00Z' },
+  { title: 'standup', start_time: '2026-05-28T10:00:00Z', end_time: '2026-05-28T10:30:00Z' },
+  { title: 'standup', start_time: '2026-05-29T10:00:00Z', end_time: '2026-05-29T10:30:00Z' },
+];
+
+describe('POST /api/assistant/parse — 3A batch scheduling', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('batch intent with recurrence returns batchPlan in response', async () => {
+    const expandRecurrenceMock = jest.fn().mockResolvedValue(BATCH_INSTANCES);
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(BATCH_INTENT),
+      chat: jest.fn().mockResolvedValue(BATCH_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      expandRecurrence: expandRecurrenceMock,
+    }));
+
+    // Tuesday instance conflicts: event at same time on Tuesday
+    const tuesdayConflict = {
+      id: 'ev-conflict', title: 'Other meeting',
+      start: '2026-05-26T10:00:00Z', end: '2026-05-26T10:30:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([tuesdayConflict])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'add a 30 min standup every weekday this week at 10am' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.batchPlan).toBeDefined();
+    expect(res.body.batchPlan).not.toBeNull();
+    expect(res.body.batchPlan.instances).toHaveLength(5);
+    expect(expandRecurrenceMock).toHaveBeenCalledWith(BATCH_INTENT, expect.any(Object));
+
+    const conflicted = res.body.batchPlan.instances.filter(i => i.conflicts?.length > 0);
+    expect(conflicted).toHaveLength(1);
+    expect(conflicted[0].start_time).toBe('2026-05-26T10:00:00Z');
+
+    const clean = res.body.batchPlan.instances.filter(i => !i.conflicts?.length);
+    expect(clean).toHaveLength(4);
+  });
+
+  it('batch intent with no conflicts returns batchPlan with all clean instances', async () => {
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(BATCH_INTENT),
+      chat: jest.fn().mockResolvedValue(BATCH_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      expandRecurrence: jest.fn().mockResolvedValue(BATCH_INSTANCES),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'add a 30 min standup every weekday this week at 10am' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.batchPlan).not.toBeNull();
+    expect(res.body.batchPlan.instances.every(i => i.conflicts.length === 0)).toBe(true);
+    expect(res.body.batchPlan.summary).toMatch(/5/);
+  });
+});
+
+describe('POST /api/assistant/confirm-batch — authenticated', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  const BATCH_EVENTS = [
+    { title: 'standup', start_time: '2026-05-25T10:00:00Z', end_time: '2026-05-25T10:30:00Z' },
+    { title: 'standup', start_time: '2026-05-26T10:00:00Z', end_time: '2026-05-26T10:30:00Z' },
+    { title: 'standup', start_time: '2026-05-27T10:00:00Z', end_time: '2026-05-27T10:30:00Z' },
+  ];
+
+  it('returns 401 when unauthenticated', async () => {
+    mockIsAuthenticated = false;
+    const res = await request(app)
+      .post('/api/assistant/confirm-batch')
+      .send({ events: BATCH_EVENTS });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 400 when events array is missing', async () => {
+    const res = await request(app)
+      .post('/api/assistant/confirm-batch')
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/events/);
+  });
+
+  it('returns 400 when events array is empty', async () => {
+    const res = await request(app)
+      .post('/api/assistant/confirm-batch')
+      .send({ events: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('creates all events and returns summary when all succeed', async () => {
+    const createdBase = { allDay: false, location: null, description: null, colorId: null, attendees: [], status: 'confirmed', recurringEventId: null };
+    const createEvent = jest.fn()
+      .mockResolvedValueOnce({ id: 'ev-1', title: 'standup', start: '2026-05-25T10:00:00Z', end: '2026-05-25T10:30:00Z', ...createdBase })
+      .mockResolvedValueOnce({ id: 'ev-2', title: 'standup', start: '2026-05-26T10:00:00Z', end: '2026-05-26T10:30:00Z', ...createdBase })
+      .mockResolvedValueOnce({ id: 'ev-3', title: 'standup', start: '2026-05-27T10:00:00Z', end: '2026-05-27T10:30:00Z', ...createdBase });
+    GoogleCalendarService.mockImplementation(() => ({ createEvent }));
+
+    const res = await request(app)
+      .post('/api/assistant/confirm-batch')
+      .send({ events: BATCH_EVENTS });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toHaveLength(3);
+    expect(res.body.results.every(r => r.status === 'created')).toBe(true);
+    expect(res.body.summary).toMatch(/Created all 3/);
+  });
+
+  it('handles partial failures and returns accurate summary', async () => {
+    const createdBase = { allDay: false, location: null, description: null, colorId: null, attendees: [], status: 'confirmed', recurringEventId: null };
+    const createEvent = jest.fn()
+      .mockResolvedValueOnce({ id: 'ev-1', title: 'standup', start: '2026-05-25T10:00:00Z', end: '2026-05-25T10:30:00Z', ...createdBase })
+      .mockRejectedValueOnce(new Error('Calendar API error'));
+    GoogleCalendarService.mockImplementation(() => ({ createEvent }));
+
+    const res = await request(app)
+      .post('/api/assistant/confirm-batch')
+      .send({ events: BATCH_EVENTS.slice(0, 2) });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results.filter(r => r.status === 'created')).toHaveLength(1);
+    expect(res.body.results.filter(r => r.status === 'failed')).toHaveLength(1);
+    expect(res.body.summary).toMatch(/Created 1 of 2/);
+  });
+});
+
+// ── 3D: event editing ─────────────────────────────────────────────────────────
+
+const UPDATE_INTENT = {
+  action: 'update',
+  title: null,
+  title_hint: 'standup',
+  time_hint: '9am',
+  day_hint: null,
+  new_title: null,
+  new_date: null,
+  new_time: null,
+  preserve_time: false,
+  duration_delta_minutes: null,
+  start_delta_minutes: null,
+  start_time: '2026-05-23T09:00:00-07:00',
+  end_time: null,
+  duration_minutes: 30,
+  attendees: [],
+  location: null,
+  confidence: 0.9,
+  date_known: true,
+  time_known: true,
+};
+
+describe('POST /api/assistant/parse — 3D event editing', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('action=update with 1 candidate returns updateProposal with before and after', async () => {
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(UPDATE_INTENT),
+      chat: jest.fn().mockResolvedValue(UPDATE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'move my standup to 10am' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updateProposal).toBeDefined();
+    expect(res.body.updateProposal).not.toBeNull();
+    expect(res.body.updateProposal.candidate).toMatchObject({ id: 'ev-del-1' });
+    expect(res.body.updateProposal.after).toBeDefined();
+    expect(res.body.updateProposal.conflicts).toBeDefined();
+  });
+
+  it('action=update with 0 candidates returns not-found message and null updateProposal', async () => {
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(UPDATE_INTENT),
+      chat: jest.fn().mockResolvedValue(UPDATE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'move my standup to 10am' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updateProposal).toBeNull();
+    expect(res.body.reply).toMatch(/couldn't find/i);
+  });
+
+  it('action=update with time change runs conflict check on new slot', async () => {
+    const updateIntentNewTime = {
+      ...UPDATE_INTENT,
+      start_time: '2026-05-23T10:00:00-07:00', // new desired time: 10am
+    };
+    const CONFLICT_AT_10AM = {
+      id: 'ev-conflict-10', title: 'Another meeting',
+      start: '2026-05-23T10:00:00-07:00', end: '2026-05-23T10:30:00-07:00',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(updateIntentNewTime),
+      chat: jest.fn().mockResolvedValue(updateIntentNewTime),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT, CONFLICT_AT_10AM])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'move my standup to 10am' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updateProposal).toBeDefined();
+    expect(res.body.updateProposal).not.toBeNull();
+    expect(res.body.updateProposal.conflicts).toBeDefined();
+    expect(res.body.updateProposal.conflicts.length).toBeGreaterThan(0);
   });
 });

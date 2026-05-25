@@ -29,11 +29,13 @@ jest.mock('passport', () => {
 
 let mockListEvents = jest.fn();
 let mockDeleteEvent = jest.fn();
+let mockUpdateEvent = jest.fn();
 
 jest.mock('../../src/services/googleCalendar', () => {
   return jest.fn().mockImplementation(() => ({
     listEvents: mockListEvents,
-    deleteEvent: mockDeleteEvent
+    deleteEvent: mockDeleteEvent,
+    updateEvent: mockUpdateEvent
   }));
 });
 
@@ -145,7 +147,6 @@ describe('DELETE /api/calendar/events/:id — authenticated', () => {
 
 const STUB_501_ENDPOINTS = [
   { method: 'post', path: '/api/calendar/events' },
-  { method: 'patch', path: '/api/calendar/events/123' },
   { method: 'get', path: '/api/calendar/freebusy' }
 ];
 
@@ -168,5 +169,60 @@ describe('Calendar stubs — authenticated (not yet implemented)', () => {
       const res = await request(app)[method](path);
       expect(res.status).toBe(501);
     });
+  });
+});
+
+// ── PATCH /api/calendar/events/:id ────────────────────────────────────────────
+
+const UPDATED_EVENT = {
+  id: 'ev-123', title: 'Updated Title',
+  start: '2026-05-28T10:00:00Z', end: '2026-05-28T11:00:00Z',
+  allDay: false, location: null, description: null,
+  colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+};
+
+describe('PATCH /api/calendar/events/:id — unauthenticated', () => {
+  beforeEach(() => { mockIsAuthenticated = false; });
+
+  it('returns 401', async () => {
+    const res = await request(app).patch('/api/calendar/events/ev-123').send({ summary: 'x' });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('PATCH /api/calendar/events/:id — authenticated', () => {
+  beforeEach(() => {
+    mockIsAuthenticated = true;
+    mockUpdateEvent.mockReset();
+  });
+
+  it('returns 200 with updated event on valid patch', async () => {
+    mockUpdateEvent.mockResolvedValue(UPDATED_EVENT);
+    const res = await request(app)
+      .patch('/api/calendar/events/ev-123')
+      .send({ summary: 'Updated Title' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: 'ev-123', title: 'Updated Title' });
+  });
+
+  it('returns 400 when body is empty', async () => {
+    const res = await request(app).patch('/api/calendar/events/ev-123').send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('calls updateEvent with the correct id and patches', async () => {
+    mockUpdateEvent.mockResolvedValue(UPDATED_EVENT);
+    await request(app)
+      .patch('/api/calendar/events/ev-123')
+      .send({ summary: 'New Title' });
+    expect(mockUpdateEvent).toHaveBeenCalledWith('ev-123', { summary: 'New Title' });
+  });
+
+  it('propagates calendar errors to the error handler', async () => {
+    mockUpdateEvent.mockRejectedValue(new Error('Event not found'));
+    const res = await request(app)
+      .patch('/api/calendar/events/ev-123')
+      .send({ summary: 'x' });
+    expect(res.status).toBe(500);
   });
 });

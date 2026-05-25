@@ -26,8 +26,32 @@ Return this exact JSON schema (all fields required):
   "location": string | null,
   "confidence": number between 0.0 and 1.0,
   "date_known": boolean,
-  "time_known": boolean
+  "time_known": boolean,
+  "recurrence": null | { "type": "daily" | "weekly" | "custom", "days": string[], "count": number | null, "until": string | null, "interval": number }
 }
+- recurrence: set for recurring/repeating create events; null for all other events.
+- recurrence.days: specific days of week (e.g. ["Monday","Wednesday","Friday"]); empty array for daily.
+- recurrence.count: total number of instances (e.g. 5 for a work week); null if not specified.
+
+For update action, also include these fields (omit or null for other actions):
+{
+  "title_hint": string | null,
+  "time_hint": string | null,
+  "day_hint": string | null,
+  "new_title": string | null,
+  "new_date": string | null,
+  "new_time": string | null,
+  "preserve_time": boolean,
+  "duration_delta_minutes": number | null,
+  "start_delta_minutes": number | null
+}
+- title_hint: fuzzy title of the event to find on the calendar (different from new_title)
+- time_hint: current time of the event to find, e.g. "3pm" (used for candidate search)
+- day_hint: current day of the event to find, e.g. "Tuesday" (used for candidate search)
+- new_title: replacement title when renaming
+- preserve_time: true when moving to a new date but keeping the same time of day
+- duration_delta_minutes: minutes to add (positive) or remove (negative) from the event duration
+- start_delta_minutes: minutes to shift the start time forward (positive) or backward (negative)
 
 Rules:
 - date_known: true ONLY if user explicitly mentioned a specific day/date ("tomorrow", "Sunday", "May 23", "next week"). False otherwise.
@@ -52,11 +76,17 @@ Action mapping examples — natural language varies widely, map it correctly:
 - "do I have anything tomorrow afternoon?" → action: "query"
 - "show me my Friday schedule" → action: "query"
 - "what do I have this week?" → action: "query"
-- "move my 3pm to 4pm tomorrow" → action: "update"
-- "reschedule the standup to next Tuesday" → action: "update"
+- "move my 3pm to 4pm tomorrow" → action: "update", time_hint: "3pm", start_delta_minutes: 60
+- "reschedule the standup to next Tuesday" → action: "update", title_hint: "standup", new_date: "next Tuesday"
+- "move my dentist to next Thursday at the same time" → action: "update", title_hint: "dentist", new_date: "next Thursday", preserve_time: true
+- "make my 3pm meeting an hour longer" → action: "update", time_hint: "3pm", duration_delta_minutes: 60
+- "rename my standup to team sync" → action: "update", title_hint: "standup", new_title: "team sync"
+- "push my 2pm back an hour" → action: "update", time_hint: "2pm", start_delta_minutes: 60
 - "book a 1-hour call with Alice next Monday at noon" → action: "create"
 - "schedule a dentist appointment Thursday at 9am" → action: "create"
-- "set up a team lunch Friday at 12:30" → action: "create"`;
+- "set up a team lunch Friday at 12:30" → action: "create"
+- "workout every weekday next week at 6am for 1 hour" → action: "create", title: "workout", recurrence: {"type":"weekly","days":["Monday","Tuesday","Wednesday","Thursday","Friday"],"count":5,"until":null,"interval":1}
+- "standup Mon/Wed/Fri for 2 weeks at 9am 30min" → action: "create", title: "standup", recurrence: {"type":"custom","days":["Monday","Wednesday","Friday"],"count":6,"until":null,"interval":1}`;
 }
 
 // Strips optional markdown code fences, parses JSON, validates shape.
@@ -78,16 +108,26 @@ function normalizeAIResponse(rawText) {
   }
 
   return {
-    action:           parsed.action,
-    title:            parsed.title            ?? null,
-    start_time:       parsed.start_time       ?? null,
-    end_time:         parsed.end_time         ?? null,
-    duration_minutes: typeof parsed.duration_minutes === 'number' ? parsed.duration_minutes : null,
-    attendees:        parsed.attendees,
-    location:         parsed.location         ?? null,
-    confidence:       Math.max(0, Math.min(1, parsed.confidence)),
-    date_known:       Boolean(parsed.date_known),
-    time_known:       Boolean(parsed.time_known),
+    action:                 parsed.action,
+    title:                  parsed.title            ?? null,
+    start_time:             parsed.start_time       ?? null,
+    end_time:               parsed.end_time         ?? null,
+    duration_minutes:       typeof parsed.duration_minutes === 'number' ? parsed.duration_minutes : null,
+    attendees:              parsed.attendees,
+    location:               parsed.location         ?? null,
+    confidence:             Math.max(0, Math.min(1, parsed.confidence)),
+    date_known:             Boolean(parsed.date_known),
+    time_known:             Boolean(parsed.time_known),
+    recurrence:             parsed.recurrence       ?? null,
+    title_hint:             parsed.title_hint             ?? null,
+    time_hint:              parsed.time_hint              ?? null,
+    day_hint:               parsed.day_hint               ?? null,
+    new_title:              parsed.new_title              ?? null,
+    new_date:               parsed.new_date               ?? null,
+    new_time:               parsed.new_time               ?? null,
+    preserve_time:          Boolean(parsed.preserve_time),
+    duration_delta_minutes: typeof parsed.duration_delta_minutes === 'number' ? parsed.duration_delta_minutes : null,
+    start_delta_minutes:    typeof parsed.start_delta_minutes    === 'number' ? parsed.start_delta_minutes    : null,
   };
 }
 
@@ -141,7 +181,9 @@ function buildIntentReply(intent) {
   }
 
   if (intent.action === 'update') {
-    return "Editing events via chat isn't supported yet. To reschedule, delete the event from the calendar and create a new one.";
+    const hint = intent.title_hint ?? intent.title;
+    if (hint) return `Looking for "${hint}" on your calendar…`;
+    return "Looking for that event on your calendar…";
   }
 
   if (intent.action === 'query') {
@@ -239,6 +281,47 @@ Suggest 3 other time slots on the same day, avoiding those conflicts.`;
         start_time: s.start_time,
         end_time: s.end_time,
         label: s.label || new Date(s.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+      }));
+  }
+
+  async expandRecurrence(intent, { now = '', timezone = 'UTC' } = {}) {
+    const systemPrompt = `You are a scheduling assistant. Expand a recurring event into individual instances.
+Return ONLY a valid JSON array with no other text:
+[{"title": "string", "start_time": "ISO8601 with timezone offset", "end_time": "ISO8601 with timezone offset"}]
+
+Generate every instance as an explicit datetime — no recurrence rules, just the flat list.
+Use the provided timezone. Do not skip any instances.
+
+Examples:
+- "5 weekday workouts at 6am for 1 hour" → 5 objects Mon–Fri each 06:00–07:00 with correct dates
+- "standup Mon/Wed/Fri 2 weeks at 9am 30min" → 6 objects each 09:00–09:30 with correct dates`;
+
+    const userMsg = `[INTENT: title="${intent.title || 'event'}" recurrence=${JSON.stringify(intent.recurrence)} duration=${intent.duration_minutes || 60}min]
+[DATE: today is ${now}, timezone ${timezone}]
+Expand into all individual instances.`;
+
+    const completion = await this.groq.chat.completions.create({
+      model: this.modelName,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMsg }
+      ],
+      temperature: 0,
+      max_tokens: 1024
+    });
+
+    const rawText = completion.choices[0].message.content;
+    let text = rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter(inst => inst && inst.start_time && inst.end_time)
+      .map(inst => ({
+        title: inst.title || intent.title || 'event',
+        start_time: inst.start_time,
+        end_time: inst.end_time,
       }));
   }
 

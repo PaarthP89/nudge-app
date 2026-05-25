@@ -38,9 +38,13 @@ export default function useCalendar(startDate, endDate) {
     const handler = () => fetchEvents();
     window.addEventListener('nudge:event-created', handler);
     window.addEventListener('nudge:event-deleted', handler);
+    window.addEventListener('nudge:event-updated', handler);
+    window.addEventListener('nudge:batch-created', handler);
     return () => {
       window.removeEventListener('nudge:event-created', handler);
       window.removeEventListener('nudge:event-deleted', handler);
+      window.removeEventListener('nudge:event-updated', handler);
+      window.removeEventListener('nudge:batch-created', handler);
     };
   }, [fetchEvents]);
 

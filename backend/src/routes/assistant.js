@@ -8,6 +8,67 @@ const { detectConflicts } = GoogleCalendarService;
 const router = express.Router();
 router.use(requireAuth);
 
+function parseTimeHint(hint, refDate = new Date()) {
+  if (!hint) return null;
+  const m = hint.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!m) return null;
+  let h = parseInt(m[1]);
+  const mins = parseInt(m[2] || '0');
+  const ap = (m[3] || '').toLowerCase();
+  if (ap === 'pm' && h < 12) h += 12;
+  if (ap === 'am' && h === 12) h = 0;
+  const d = new Date(refDate);
+  d.setHours(h, mins, 0, 0);
+  return d;
+}
+
+function computeUpdatePatches(candidate, intent) {
+  const patches = {};
+
+  if (intent.new_title) {
+    patches.summary = intent.new_title;
+  }
+
+  const candidateStart = new Date(candidate.start);
+  const candidateEnd   = new Date(candidate.end);
+  const durationMs     = candidateEnd - candidateStart;
+
+  let newStart    = new Date(candidateStart);
+  let timeChanged = false;
+
+  if (intent.start_delta_minutes !== null && intent.start_delta_minutes !== undefined) {
+    const delta = intent.start_delta_minutes * 60 * 1000;
+    newStart    = new Date(newStart.getTime() + delta);
+    timeChanged = true;
+  } else if (intent.date_known && intent.start_time) {
+    const intentStart = new Date(intent.start_time);
+    if (intent.time_known && !intent.preserve_time) {
+      newStart = intentStart;
+    } else {
+      // preserve_time or date-only: keep candidate's time of day
+      newStart = new Date(
+        intentStart.getFullYear(), intentStart.getMonth(), intentStart.getDate(),
+        candidateStart.getHours(), candidateStart.getMinutes(), 0, 0
+      );
+    }
+    timeChanged = true;
+  }
+
+  let newEnd = new Date(newStart.getTime() + durationMs);
+
+  if (intent.duration_delta_minutes !== null && intent.duration_delta_minutes !== undefined) {
+    newEnd      = new Date(newEnd.getTime() + intent.duration_delta_minutes * 60 * 1000);
+    timeChanged = true;
+  }
+
+  if (timeChanged) {
+    patches.start = { dateTime: newStart.toISOString() };
+    patches.end   = { dateTime: newEnd.toISOString() };
+  }
+
+  return patches;
+}
+
 const MAX_MESSAGE_LEN = 1000;
 
 function getContext(req) {
@@ -76,8 +137,42 @@ async function runParse(req, res, next) {
     let suggestions = [];
     let candidates = [];
     let loopIterations = 0;
+    let batchPlan = null;
 
-    if (intent.action === 'create' && intent.start_time && intent.date_known && intent.time_known) {
+    if (intent.action === 'create' && intent.recurrence) {
+      try {
+        const expandedInstances = await service.expandRecurrence(intent, getContext(req));
+        if (expandedInstances.length > 0) {
+          const { accessToken, refreshToken } = req.user;
+          const calService = new GoogleCalendarService(accessToken, refreshToken);
+          const times = expandedInstances.map(i => new Date(i.start_time).getTime());
+          const ends  = expandedInstances.map(i => new Date(i.end_time).getTime());
+          const rangeStart = new Date(Math.min(...times));
+          const rangeEnd   = new Date(Math.max(...ends));
+          const events = await calService.listEvents(rangeStart, rangeEnd);
+
+          const annotated = expandedInstances.map(inst => ({
+            ...inst,
+            attendees: intent.attendees || [],
+            location:  intent.location  || null,
+            conflicts: detectConflicts(events, { action: 'create', start_time: inst.start_time, end_time: inst.end_time }),
+          }));
+
+          const conflictCount = annotated.filter(i => i.conflicts.length > 0).length;
+          const eventLabel = `"${intent.title || 'event'}"`;
+          const summary = conflictCount > 0
+            ? `${annotated.length} ${eventLabel} events — ${conflictCount} conflict${conflictCount > 1 ? 's' : ''}`
+            : `${annotated.length} ${eventLabel} events ready to schedule`;
+
+          batchPlan = { instances: annotated, summary };
+          reply = conflictCount > 0
+            ? `Found ${conflictCount} conflict${conflictCount > 1 ? 's' : ''}. Review the plan below.`
+            : `All ${annotated.length} slots are available! Review and confirm below.`;
+        }
+      } catch (err) {
+        console.error('[assistant] expandRecurrence error:', err.message);
+      }
+    } else if (intent.action === 'create' && intent.start_time && intent.date_known && intent.time_known) {
       const { accessToken, refreshToken } = req.user;
       const calService = new GoogleCalendarService(accessToken, refreshToken);
       const windowStart = new Date(intent.start_time);
@@ -173,6 +268,97 @@ async function runParse(req, res, next) {
       }
     }
 
+    let updateProposal = null;
+
+    if (intent.action === 'update') {
+      try {
+        const { accessToken, refreshToken } = req.user;
+        const calService = new GoogleCalendarService(accessToken, refreshToken);
+        const titleFilter = intent.title_hint ?? intent.title;
+
+        let searchStart, searchEnd;
+
+        const timeHintDate = parseTimeHint(intent.time_hint);
+        if (timeHintDate) {
+          // time_hint unambiguously refers to current event's time
+          searchStart = new Date(timeHintDate.getTime() - 90 * 60 * 1000);
+          searchEnd   = new Date(timeHintDate.getTime() + 90 * 60 * 1000);
+        } else if (titleFilter) {
+          // title search is safer than start_time (which for update is the NEW desired time)
+          searchStart = new Date();
+          searchEnd   = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        } else if (intent.date_known && intent.start_time) {
+          const d = new Date(intent.start_time);
+          if (intent.time_known) {
+            searchStart = new Date(d.getTime() - 90 * 60 * 1000);
+            searchEnd   = new Date(d.getTime() + 90 * 60 * 1000);
+          } else {
+            searchStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
+            searchEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
+          }
+        }
+
+        if (searchStart && searchEnd) {
+          const events = await calService.listEvents(searchStart, searchEnd);
+          let matches = events.filter(ev => !ev.allDay);
+
+          if (titleFilter) {
+            const needle = titleFilter.toLowerCase();
+            const titled = matches.filter(ev =>
+              ev.title?.toLowerCase().includes(needle) ||
+              needle.includes(ev.title?.toLowerCase() ?? '')
+            );
+            if (titled.length > 0) matches = titled;
+          }
+
+          candidates = matches.slice(0, 3);
+        }
+
+        if (candidates.length === 0) {
+          reply = titleFilter
+            ? `I couldn't find an event called "${titleFilter}" in your calendar.`
+            : "I couldn't find a matching event in your calendar.";
+        } else if (candidates.length === 1) {
+          const candidate = candidates[0];
+          const patches   = computeUpdatePatches(candidate, intent);
+
+          let updateConflicts = [];
+          if (patches.start && patches.end) {
+            const windowStart = new Date(patches.start.dateTime);
+            const windowEnd   = new Date(patches.end.dateTime);
+            const checkEvents = await calService.listEvents(
+              new Date(windowStart.getTime() - 5 * 60 * 1000),
+              new Date(windowEnd.getTime()   + 5 * 60 * 1000)
+            );
+            updateConflicts = detectConflicts(
+              checkEvents.filter(ev => ev.id !== candidate.id),
+              { action: 'create', start_time: patches.start.dateTime, end_time: patches.end.dateTime }
+            );
+          }
+
+          updateProposal = {
+            candidate,
+            patches,
+            after: {
+              id:    candidate.id,
+              title: patches.summary        ?? candidate.title,
+              start: patches.start?.dateTime ?? candidate.start,
+              end:   patches.end?.dateTime   ?? candidate.end,
+            },
+            conflicts: updateConflicts
+          };
+
+          reply = updateConflicts.length > 0
+            ? `Found "${candidate.title}" — the new time has a conflict. Update anyway?`
+            : `Found "${candidate.title}" — ready to update?`;
+        } else {
+          reply = `Found ${candidates.length} events — which one should I update?`;
+        }
+      } catch (err) {
+        console.error('[assistant] update search error:', err.message);
+      }
+    }
+
     let queryResults = null;
 
     if (intent.action === 'query' && intent.date_known && intent.start_time) {
@@ -194,7 +380,7 @@ async function runParse(req, res, next) {
       }
     }
 
-    res.json({ intent, reply, conflicts, suggestions, candidates, queryResults, loopIterations });
+    res.json({ intent, reply, conflicts, suggestions, candidates, queryResults, loopIterations, updateProposal, batchPlan });
   } catch (err) {
     console.error('[assistant] AI service error:', err.status, err.statusCode, err.message);
     const msg = String(err.message || '');
@@ -243,6 +429,38 @@ router.post('/confirm', async (req, res, next) => {
     }
 
     res.status(201).json({ event, invitesSent, inviteErrors });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/confirm-batch', async (req, res, next) => {
+  try {
+    const { events } = req.body;
+    if (!Array.isArray(events) || events.length === 0) {
+      return res.status(400).json({ error: 'events array is required and must be non-empty' });
+    }
+
+    const { accessToken, refreshToken } = req.user;
+    const calService = new GoogleCalendarService(accessToken, refreshToken);
+    const results = [];
+
+    for (const event of events) {
+      try {
+        const created = await calService.createEvent(event);
+        results.push({ status: 'created', event: created });
+      } catch (err) {
+        results.push({ status: 'failed', event, error: err.message });
+      }
+    }
+
+    const created = results.filter(r => r.status === 'created').length;
+    const failed  = results.filter(r => r.status === 'failed').length;
+    const summary = failed === 0
+      ? `Created all ${created} events`
+      : `Created ${created} of ${events.length} — ${failed} failed`;
+
+    res.json({ results, summary });
   } catch (err) {
     next(err);
   }

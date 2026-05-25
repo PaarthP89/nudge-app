@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import useChat from '../../hooks/useChat';
+import EditConfirmCard from './EditConfirmCard';
+import BatchPlanCard from './BatchPlanCard';
 import './ChatPanel.css';
 
 function formatTime(dateStr) {
@@ -293,7 +295,7 @@ function DeleteConfirmCard({ payload, onConfirmDelete, onCancel }) {
 
 // ─── MessageBubble ────────────────────────────────────────────────────────────
 
-function MessageBubble({ message, onConfirm, onConfirmDelete, onCancelDraft, onPickSuggestion }) {
+function MessageBubble({ message, onConfirm, onConfirmDelete, onConfirmUpdate, onConfirmBatch, onCancelDraft, onPickSuggestion }) {
   const isUser = message.role === 'user';
 
   return (
@@ -324,6 +326,20 @@ function MessageBubble({ message, onConfirm, onConfirmDelete, onCancelDraft, onP
         {message.type === 'queryResult' && (
           <QueryResultCard payload={message.payload} />
         )}
+        {message.type === 'editConfirm' && (
+          <EditConfirmCard
+            payload={message.payload}
+            onConfirmUpdate={onConfirmUpdate}
+            onCancel={onCancelDraft}
+          />
+        )}
+        {message.type === 'batchPlan' && (
+          <BatchPlanCard
+            payload={message.payload}
+            onConfirmBatch={onConfirmBatch}
+            onCancel={onCancelDraft}
+          />
+        )}
         <span className="msg-time">
           {message.timestamp.toLocaleTimeString(undefined, {
             hour: 'numeric', minute: '2-digit'
@@ -350,7 +366,7 @@ function TypingIndicator() {
 
 export default function ChatPanel() {
   const [input, setInput] = useState('');
-  const { messages, loading, error, sendMessage, confirmEvent, confirmDelete, cancelDraft, pickSuggestion } = useChat();
+  const { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, cancelDraft, pickSuggestion } = useChat();
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -388,6 +404,8 @@ export default function ChatPanel() {
             message={msg}
             onConfirm={confirmEvent}
             onConfirmDelete={confirmDelete}
+            onConfirmUpdate={confirmUpdate}
+            onConfirmBatch={confirmBatch}
             onCancelDraft={cancelDraft}
             onPickSuggestion={pickSuggestion}
           />

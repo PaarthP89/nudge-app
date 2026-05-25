@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 2 complete (2026-05-22). Phase 3B complete (2026-05-25). All MVP + enhanced UX features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, and 30-day persistent sessions. Phase 3B adds autonomous conflict resolution: suggested slots are now validated against real calendar events before being shown to the user; a second pass with `excludeRanges` fires if all first-pass suggestions are also taken (max 2 iterations, graceful fallback).
+**Status:** Phase 2 complete (2026-05-22). Phase 3B complete (2026-05-25). Phase 3D complete (2026-05-25). Phase 3A complete (2026-05-25). All MVP + enhanced UX features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, and recurring/batch event scheduling. Phase 3B adds autonomous conflict resolution. Phase 3D adds NL event editing. Phase 3A adds batch scheduling: user says "standup every weekday at 10am" → AI expands recurrence → conflict-checks all instances → BatchPlanCard shows plan with ⚠ badges → single confirm creates all events via `POST /confirm-batch`. 127 tests passing.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -19,7 +19,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - **Node.js + Express** — REST API, session management, OAuth proxy
 - **express-session** — session management
 - **Passport.js** — Google OAuth 2.0 authentication
-- **Testing:** Jest + Supertest (106 tests passing)
+- **Testing:** Jest + Supertest (127 tests passing)
 
 ### AI & External Services
 - **Groq SDK (llama-3.3-70b-versatile)** — intent parsing, conflict resolution, rescheduling suggestions (free tier, 30 RPM). Model is configurable via `GROQ_MODEL` env var. Service abstracted as `AIService` — swap provider by editing `src/services/ai.js` only.
@@ -135,26 +135,28 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 ---
 
-### 3A: Recurring / batch event scheduling
+### 3A: Recurring / batch event scheduling ✓ Complete (2026-05-25)
 **User story:** "Add a 1-hour workout every weekday next week at 6am" or "Schedule standup Monday through Friday at 9am for the next 3 weeks"
 
 **What Nudge does:**
 1. Parses the recurrence pattern from natural language (daily, weekly, specific days, N weeks/months)
 2. Expands the pattern into a list of individual event instances with exact datetimes
 3. Runs `detectConflicts` on ALL instances in one pass before showing the user anything
-4. Presents a **BatchPlanCard** showing: how many events will be created, date range, any conflicts found
-5. Conflicts are handled per-instance: if Monday 6am is taken, auto-suggest Monday 6:30am for that instance only — not the whole series
+4. Presents a **BatchPlanCard** showing: how many events will be created, any conflicts found
+5. Conflicted instances show a ⚠ badge; user can "Confirm all" or "Skip conflicted"
 6. Single "Confirm all" button creates every event; calendar refreshes once when done
-7. Reports: "Created 5 of 5 workout events" or "Created 4 of 5 — skipped Thursday (conflict with dentist)"
+7. Reports: "Created all 5 events" or "Created 4 of 5 — 1 failed"
 
-**AI changes:**
-- `parseIntent` needs to return `recurrence` object: `{ type: 'daily'|'weekly'|'custom', days: [], count: N, until: date }`
-- New `AIService.expandRecurrence(intent)` expands recurrence into array of datetime instances
-- New `POST /api/assistant/confirm-batch` route accepts array of event objects, creates them sequentially, returns results array
-
-**Frontend changes:**
-- New `BatchPlanCard` component: shows event list with times, conflict badges, confirm/cancel
-- `useChat.js` handles `batchPlan` response type alongside existing types
+**What changed:**
+- `parseIntent` schema: added `recurrence` field `{ type, days, count, until, interval }` + 2 few-shot examples
+- `normalizeAIResponse`: passes through `recurrence` field
+- `AIService.expandRecurrence(intent, { now, timezone })` — calls Groq with a lean prompt to expand recurrence into flat `[{title, start_time, end_time}]` array; strips code fences, validates array
+- `/parse` route: when `intent.recurrence` is set, calls `expandRecurrence`, fetches events for the full date range in one calendar API call, runs `detectConflicts` on every instance, annotates each with `conflicts`, returns `batchPlan: { instances, summary }`; skips normal single-event conflict path
+- `POST /api/assistant/confirm-batch` — accepts `{ events }` array, creates sequentially, returns `{ results, summary }`
+- `BatchPlanCard.jsx` — shows instance list with ⚠ conflict badges, "Confirm all N", "Skip X conflicted, confirm Y", Cancel
+- `useChat.js`: added `confirmBatch` (POSTs to `/confirm-batch`, fires `nudge:batch-created`, clears draft + history); handles `batchPlan` response (suppresses regular confirm card when batch)
+- `useCalendar.js`: listens for `nudge:batch-created` to refresh calendar
+- 10 new TDD tests (3 in `ai.test.js`, 7 in `assistant.test.js`); 127 tests total, all passing
 
 ---
 
@@ -201,7 +203,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 ---
 
-### 3D: Natural language event editing
+### 3D: Natural language event editing ✓ Complete (2026-05-25)
 **User story:** "Move my dentist appointment to next Thursday at the same time" or "Make my 3pm meeting an hour longer"
 
 **What Nudge does:**
@@ -210,16 +212,18 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 3. Checks the new slot for conflicts before writing
 4. Shows an **EditConfirmCard** with before/after: "Dentist: Tue May 26 10am → Thu May 28 10am — Confirm?"
 5. On confirm: calls `calendar.events.patch` (not delete+create — preserves event ID and existing attendees)
-6. Sends update notification emails to attendees if time changed
+6. Sends update notification emails to attendees if time changed (via `sendUpdates: 'all'` on patch)
 
-**Backend changes:**
-- `GoogleCalendarService.updateEvent(eventId, patches)` — calls `calendar.events.patch`
-- `PATCH /api/calendar/events/:id` route (currently stub 501) — implement it
-- `/parse` route: action=`update` → find candidate → apply patches → conflict check → return `updateProposal`
-
-**Frontend changes:**
-- New `EditConfirmCard` component showing before/after diff
-- `useChat.js` handles `updateProposal` response type
+**What changed:**
+- `GoogleCalendarService.updateEvent(eventId, patches)` — `calendar.events.patch` with `sendUpdates: 'all'`
+- `PATCH /api/calendar/events/:id` route — implemented (was 501 stub)
+- `/parse` route: action=`update` → candidate search (time_hint > title_hint > date fallback) → `computeUpdatePatches` (handles new time, preserve_time, start_delta_minutes, duration_delta_minutes, new_title) → conflict check on new slot (excludes the candidate itself) → `updateProposal` in response
+- `parseIntent` prompt: 6 new update examples + 9 new optional fields (title_hint, time_hint, day_hint, new_title, new_date, new_time, preserve_time, duration_delta_minutes, start_delta_minutes)
+- `buildIntentReply` for update: "Looking for X on your calendar…" (was "not supported")
+- `EditConfirmCard.jsx` — before/after diff with strikethrough, conflict warning, fires `nudge:event-updated`
+- `useChat.js`: `confirmUpdate` callback (PATCH + `nudge:event-updated`), handles `updateProposal` → `editConfirm` message
+- `useCalendar.js`: listens for `nudge:event-updated` to refresh calendar
+- 8 new tests; 117 total, all passing
 
 ---
 
@@ -227,23 +231,23 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 Build in this sequence — each step is independently useful and unblocks the next:
 
 1. ~~**3B first** (conflict loop)~~ ✓ Complete (2026-05-25)
-2. **3D next** (event editing) — unlocks the `PATCH` stub, high user value, reuses candidate search from delete
-3. **3A third** (batch scheduling) — highest demo impact, needs BatchPlanCard but logic builds on conflict loop from 3B
+2. ~~**3D next** (event editing)~~ ✓ Complete (2026-05-25)
+3. ~~**3A third** (batch scheduling)~~ ✓ Complete (2026-05-25)
 4. **3C last** (find free slots) — most novel AI feature, good capstone, depends on solid event reading from prior phases
 
 ---
 
 ### Phase 3 new API endpoints
-- `POST /api/assistant/confirm-batch` — create multiple events, return results array
+- ~~`POST /api/assistant/confirm-batch` — create multiple events, return results array~~ ✓ Complete (2026-05-25)
 - `PATCH /api/calendar/events/:id` — update event fields (implements existing stub)
 
 ### Phase 3 new frontend components
-- `BatchPlanCard` — shows N events to be created, conflict badges, single confirm
+- ~~`BatchPlanCard` — shows N events to be created, conflict badges, single confirm~~ ✓ Complete (2026-05-25)
 - `SlotOptionsCard` — shows ranked free slot options with labels
-- `EditConfirmCard` — before/after diff for event updates
+- ~~`EditConfirmCard` — before/after diff for event updates~~ ✓ Complete (2026-05-25)
 
 ### Phase 3 new AIService methods
-- `AIService.expandRecurrence(intent)` → `DateTime[]`
+- ~~`AIService.expandRecurrence(intent)` → `DateTime[]`~~ ✓ Complete (2026-05-25)
 - `AIService.findFreeSlots(events, duration, preferences)` → scored slot array
 - Updates to `suggestSlots` to accept `excludeRanges` for second-pass conflict avoidance
 
@@ -443,7 +447,7 @@ For batch scheduling (3A), mock `expandRecurrence` with a fixed 5-instance array
 ### Calendar (all require session auth)
 - `GET /api/calendar/events` — Fetch events for date range
 - `POST /api/calendar/events` — Create event (stub 501)
-- `PATCH /api/calendar/events/:id` — Update event (stub 501 → implemented in Phase 3D)
+- `PATCH /api/calendar/events/:id` — Update event (implemented in Phase 3D)
 - `DELETE /api/calendar/events/:id` — Delete event
 - `GET /api/calendar/freebusy` — Check free/busy slots (stub 501)
 

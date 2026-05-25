@@ -106,6 +106,38 @@ export default function useChat() {
     }
   }, []);
 
+  const confirmUpdate = useCallback(async (eventId, patches) => {
+    try {
+      const res = await axios.patch(
+        `/api/calendar/events/${eventId}`,
+        patches,
+        { withCredentials: true }
+      );
+      draftRef.current = null;
+      historyRef.current = [];
+      setTimeout(() => window.dispatchEvent(new CustomEvent('nudge:event-updated')), 500);
+      return { success: true, event: res.data };
+    } catch (err) {
+      return { success: false, error: err.response?.data?.error || 'Failed to update event.' };
+    }
+  }, []);
+
+  const confirmBatch = useCallback(async (events) => {
+    try {
+      const res = await axios.post(
+        '/api/assistant/confirm-batch',
+        { events },
+        { withCredentials: true }
+      );
+      draftRef.current = null;
+      historyRef.current = [];
+      setTimeout(() => window.dispatchEvent(new CustomEvent('nudge:batch-created')), 500);
+      return { success: true, summary: res.data.summary };
+    } catch (err) {
+      return { success: false, error: err.response?.data?.error || 'Failed to create events.' };
+    }
+  }, []);
+
   const confirmEvent = useCallback(async (intent) => {
     try {
       const res = await axios.post(
@@ -187,7 +219,7 @@ export default function useChat() {
         { message: messageToSend, history: historyRef.current, now: clientNow, timezone: clientTimezone },
         { withCredentials: true }
       );
-      const { intent, reply, conflicts, suggestions, candidates, queryResults } = res.data;
+      const { intent, reply, conflicts, suggestions, candidates, queryResults, updateProposal, batchPlan } = res.data;
 
       const draft = mergeDraft(draftRef.current, intent);
       draftRef.current = draft;
@@ -227,8 +259,13 @@ export default function useChat() {
         }));
       }
 
-      // Only show confirm card when there are no conflicts.
-      if (readyToConfirm && !hasConflicts) {
+      // Batch plan — show BatchPlanCard instead of single confirm.
+      if (batchPlan) {
+        newMessages.push(makeMessage('assistant', '', 'batchPlan', batchPlan));
+      }
+
+      // Only show confirm card when there are no conflicts and it's not a batch.
+      if (readyToConfirm && !hasConflicts && !batchPlan) {
         newMessages.push(makeMessage('assistant', '', 'confirm', { intent: draft, hasConflicts: false }));
       }
 
@@ -240,6 +277,11 @@ export default function useChat() {
       // Query results — show fetched events as a list.
       if (intent.action === 'query' && queryResults?.length > 0) {
         newMessages.push(makeMessage('assistant', '', 'queryResult', { events: queryResults }));
+      }
+
+      // Update proposal — show before/after diff for user to confirm.
+      if (intent.action === 'update' && updateProposal) {
+        newMessages.push(makeMessage('assistant', '', 'editConfirm', updateProposal));
       }
 
       setMessages(prev => [...prev, ...newMessages]);
@@ -263,5 +305,5 @@ export default function useChat() {
     historyRef.current = [];
   }, []);
 
-  return { messages, loading, error, sendMessage, confirmEvent, confirmDelete, cancelDraft, pickSuggestion };
+  return { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, cancelDraft, pickSuggestion };
 }

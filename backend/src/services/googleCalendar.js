@@ -77,8 +77,14 @@ class GoogleCalendarService {
     return normalizeEvent(response.data);
   }
 
-  async updateEvent(eventId, updates) {
-    throw new Error('not implemented');
+  async updateEvent(eventId, patches) {
+    const response = await this.calendar.events.patch({
+      calendarId: 'primary',
+      eventId,
+      resource: patches,
+      sendUpdates: 'all'
+    });
+    return normalizeEvent(response.data);
   }
 
   async deleteEvent(eventId) {

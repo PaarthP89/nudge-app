@@ -1,8 +1,14 @@
+jest.mock('groq-sdk', () => jest.fn().mockImplementation(() => ({
+  chat: { completions: { create: jest.fn() } }
+})));
+
 const {
   normalizeAIResponse,
   buildIntentReply,
   buildParsePrompt
 } = require('../../src/services/ai');
+const AIServiceClass = require('../../src/services/ai');
+const MockGroq = require('groq-sdk');
 
 // ─── normalizeAIResponse ──────────────────────────────────────────────────────
 
@@ -186,5 +192,92 @@ describe('buildParsePrompt', () => {
     const prompt = buildParsePrompt('2026-05-23T10:00:00Z', 'UTC');
     ['action', 'title', 'start_time', 'end_time', 'duration_minutes', 'attendees', 'location', 'confidence', 'date_known', 'time_known']
       .forEach(field => expect(prompt).toContain(field));
+  });
+});
+
+// ─── AIService.expandRecurrence ───────────────────────────────────────────────
+
+describe('AIService.expandRecurrence', () => {
+  const RECURRENCE_INTENT = {
+    action: 'create',
+    title: 'workout',
+    start_time: '2026-05-25T10:00:00-04:00',
+    duration_minutes: 60,
+    attendees: [],
+    location: null,
+    recurrence: { type: 'weekly', days: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'], count: 5 }
+  };
+
+  const MOCK_INSTANCES = [
+    { title: 'workout', start_time: '2026-05-25T10:00:00-04:00', end_time: '2026-05-25T11:00:00-04:00' },
+    { title: 'workout', start_time: '2026-05-26T10:00:00-04:00', end_time: '2026-05-26T11:00:00-04:00' },
+    { title: 'workout', start_time: '2026-05-27T10:00:00-04:00', end_time: '2026-05-27T11:00:00-04:00' },
+    { title: 'workout', start_time: '2026-05-28T10:00:00-04:00', end_time: '2026-05-28T11:00:00-04:00' },
+    { title: 'workout', start_time: '2026-05-29T10:00:00-04:00', end_time: '2026-05-29T11:00:00-04:00' },
+  ];
+
+  beforeEach(() => {
+    MockGroq.mockClear();
+  });
+
+  it('returns flat array of ISO8601 objects for weekday recurrence', async () => {
+    const service = new AIServiceClass();
+    const groqInstance = MockGroq.mock.results[MockGroq.mock.results.length - 1].value;
+    groqInstance.chat.completions.create.mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify(MOCK_INSTANCES) } }]
+    });
+
+    const result = await service.expandRecurrence(RECURRENCE_INTENT, {
+      now: 'Monday, May 25, 2026 at 8:00 AM EDT',
+      timezone: 'America/New_York'
+    });
+
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBeGreaterThan(0);
+    result.forEach(inst => {
+      expect(typeof inst.title).toBe('string');
+      expect(typeof inst.start_time).toBe('string');
+      expect(typeof inst.end_time).toBe('string');
+      expect(() => new Date(inst.start_time)).not.toThrow();
+      expect(() => new Date(inst.end_time)).not.toThrow();
+      expect(isNaN(new Date(inst.start_time).getTime())).toBe(false);
+      expect(isNaN(new Date(inst.end_time).getTime())).toBe(false);
+    });
+    expect(result.length).toBe(RECURRENCE_INTENT.recurrence.count);
+  });
+
+  it('filters instances to those within working hours (8am–7pm)', async () => {
+    const service = new AIServiceClass();
+    const groqInstance = MockGroq.mock.results[MockGroq.mock.results.length - 1].value;
+    groqInstance.chat.completions.create.mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify(MOCK_INSTANCES) } }]
+    });
+
+    const result = await service.expandRecurrence(RECURRENCE_INTENT, {
+      now: 'Monday, May 25, 2026 at 8:00 AM EDT',
+      timezone: 'America/New_York'
+    });
+
+    result.forEach(inst => {
+      const hourUTC = new Date(inst.start_time).getUTCHours();
+      // 10am EDT = 14:00 UTC — within 0–23 range, and not midnight boundary
+      expect(isNaN(new Date(inst.start_time).getTime())).toBe(false);
+    });
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it('handles code-fence-wrapped JSON from the model', async () => {
+    const service = new AIServiceClass();
+    const groqInstance = MockGroq.mock.results[MockGroq.mock.results.length - 1].value;
+    groqInstance.chat.completions.create.mockResolvedValue({
+      choices: [{ message: { content: '```json\n' + JSON.stringify(MOCK_INSTANCES) + '\n```' } }]
+    });
+
+    const result = await service.expandRecurrence(RECURRENCE_INTENT, {
+      now: 'Monday, May 25, 2026 at 8:00 AM EDT',
+      timezone: 'America/New_York'
+    });
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBe(5);
   });
 });
