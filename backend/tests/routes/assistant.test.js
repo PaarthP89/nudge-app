@@ -977,6 +977,44 @@ describe('POST /api/assistant/parse — 3D event editing', () => {
     expect(res.body.reply).toMatch(/couldn't find/i);
   });
 
+  it('action=update with time_hint and date_known finds event on the specified date (not just today)', async () => {
+    // Regression: parseTimeHint was using today's date, so "move my event tomorrow at 1pm"
+    // searched today's 1pm window and found nothing when the event was tomorrow.
+    const UPDATE_INTENT_TOMORROW = {
+      ...UPDATE_INTENT,
+      time_hint: '1pm',
+      date_known: true,
+      time_known: true,
+      start_time: '2026-05-26T13:00:00-07:00', // tomorrow 1pm
+    };
+    const TOMORROW_EVENT = {
+      id: 'ev-tomorrow', title: 'standup',
+      start: '2026-05-26T13:00:00-07:00', end: '2026-05-26T13:30:00-07:00',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(UPDATE_INTENT_TOMORROW),
+      chat: jest.fn().mockResolvedValue(UPDATE_INTENT_TOMORROW),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    // First listEvents call (today's 1pm window) returns nothing;
+    // second call (tomorrow's 1pm window, fallback) and third (conflict check) return the event.
+    const listEvents = jest.fn()
+      .mockResolvedValueOnce([])         // today search: empty
+      .mockResolvedValue([TOMORROW_EVENT]); // fallback search + conflict check
+    GoogleCalendarService.mockImplementation(() => ({ listEvents }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'move my event tomorrow at 1pm' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updateProposal).toBeDefined();
+    expect(res.body.updateProposal).not.toBeNull();
+    expect(res.body.updateProposal.candidate.id).toBe('ev-tomorrow');
+  });
+
   it('action=update with time change runs conflict check on new slot', async () => {
     const updateIntentNewTime = {
       ...UPDATE_INTENT,

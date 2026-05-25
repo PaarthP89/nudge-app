@@ -314,6 +314,26 @@ async function runParse(req, res, next) {
           candidates = matches.slice(0, 3);
         }
 
+        // Fallback: if time_hint search found nothing but we have a specific date, retry
+        // using that date as the reference. Covers "move my event tomorrow at 1pm" where
+        // parseTimeHint uses today by default and misses an event on a different day.
+        if (candidates.length === 0 && intent.time_hint && intent.date_known && intent.start_time) {
+          const timeHintOnDate = parseTimeHint(intent.time_hint, new Date(intent.start_time));
+          const altStart = new Date(timeHintOnDate.getTime() - 90 * 60 * 1000);
+          const altEnd   = new Date(timeHintOnDate.getTime() + 90 * 60 * 1000);
+          const altEvents = await calService.listEvents(altStart, altEnd);
+          let altMatches = altEvents.filter(ev => !ev.allDay);
+          if (titleFilter) {
+            const needle = titleFilter.toLowerCase();
+            const titled = altMatches.filter(ev =>
+              ev.title?.toLowerCase().includes(needle) ||
+              needle.includes(ev.title?.toLowerCase() ?? '')
+            );
+            if (titled.length > 0) altMatches = titled;
+          }
+          candidates = altMatches.slice(0, 3);
+        }
+
         if (candidates.length === 0) {
           reply = titleFilter
             ? `I couldn't find an event called "${titleFilter}" in your calendar.`

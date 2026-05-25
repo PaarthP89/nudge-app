@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 2 complete (2026-05-22). Phase 3B complete (2026-05-25). Phase 3D complete (2026-05-25). Phase 3A complete (2026-05-25). All MVP + enhanced UX features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, and recurring/batch event scheduling. Phase 3B adds autonomous conflict resolution. Phase 3D adds NL event editing. Phase 3A adds batch scheduling: user says "standup every weekday at 10am" → AI expands recurrence → conflict-checks all instances → BatchPlanCard shows plan with ⚠ badges → single confirm creates all events via `POST /confirm-batch`. 127 tests passing.
+**Status:** Phase 2 complete (2026-05-22). Phase 3B complete (2026-05-25). Phase 3D complete (2026-05-25). Phase 3A complete (2026-05-25). All MVP + enhanced UX features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, and recurring/batch event scheduling. Phase 3B adds autonomous conflict resolution. Phase 3D adds NL event editing. Phase 3A adds batch scheduling: user says "standup every weekday at 10am" → AI expands recurrence → conflict-checks all instances → BatchPlanCard shows plan with ⚠ badges → single confirm creates all events via `POST /confirm-batch`. Bug fix: update candidate search now falls back to the user-specified date when a time_hint + date search on today finds nothing (e.g. "move my event tomorrow at 1pm"). 128 tests passing.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -19,7 +19,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - **Node.js + Express** — REST API, session management, OAuth proxy
 - **express-session** — session management
 - **Passport.js** — Google OAuth 2.0 authentication
-- **Testing:** Jest + Supertest (127 tests passing)
+- **Testing:** Jest + Supertest (128 tests passing)
 
 ### AI & External Services
 - **Groq SDK (llama-3.3-70b-versatile)** — intent parsing, conflict resolution, rescheduling suggestions (free tier, 30 RPM). Model is configurable via `GROQ_MODEL` env var. Service abstracted as `AIService` — swap provider by editing `src/services/ai.js` only.
@@ -156,7 +156,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - `BatchPlanCard.jsx` — shows instance list with ⚠ conflict badges, "Confirm all N", "Skip X conflicted, confirm Y", Cancel
 - `useChat.js`: added `confirmBatch` (POSTs to `/confirm-batch`, fires `nudge:batch-created`, clears draft + history); handles `batchPlan` response (suppresses regular confirm card when batch)
 - `useCalendar.js`: listens for `nudge:batch-created` to refresh calendar
-- 10 new TDD tests (3 in `ai.test.js`, 7 in `assistant.test.js`); 127 tests total, all passing
+- 10 new TDD tests (3 in `ai.test.js`, 7 in `assistant.test.js`); 128 tests total, all passing
 
 ---
 
