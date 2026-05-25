@@ -27,7 +27,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - **Gmail API** — send invite emails with "Add to Google Calendar" button
 - **Google OAuth 2.0** — authentication with calendar + Gmail scopes
 
-### Deployment (Later)
+### Deployment
 - Backend: Railway or Render
 - Frontend: Vercel
 
@@ -37,7 +37,9 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - **Session-based auth:** OAuth tokens stored server-side, refreshed automatically
 - **Iterative phases:** Phase 1 (P0 features) → Phase 2 (P1 features) → Phase 3 (P2 features)
 
-## Phase 1: Core P0 Features (MVP)
+---
+
+## Phase 1: Core P0 Features (MVP) ✓ Complete
 - [x] Project setup (repo, frontend/backend structure) — ✓ Complete (2026-05-21)
   - Express backend with auth, calendar, assistant routes
   - React + Vite frontend with Router, placeholder components
@@ -82,7 +84,9 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - express-session cookie maxAge: 30 days; rolling: true resets expiry on each request
   - Google refresh_token stored in session; googleapis handles access token auto-refresh per request
 
-## Phase 2: P1 Features (Enhanced UX)
+---
+
+## Phase 2: P1 Features (Enhanced UX) ✓ Complete
 - [x] Delete calendar events — ✓ Complete (2026-05-22)
   - `GoogleCalendarService.deleteEvent()` calls `calendar.events.delete` with `sendUpdates: 'all'`
   - `DELETE /api/calendar/events/:id` route implemented
@@ -117,13 +121,314 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - QueryResultCard shows each event with title and time range
   - "Nothing on your calendar for X" reply when day is empty
 
-## Phase 3: P2 Features (Polish)
-- [ ] Event detail sidebar / click to edit
-- [ ] Smart time suggestions (AI finds optimal slots)
-- [ ] Meeting prep summaries (pre-event briefing)
+---
+
+## Phase 3: Agentic Scheduling (The Core Upgrade)
+
+**North star:** Nudge stops being a chatbot that creates single events and becomes an agent that reasons about your calendar, executes multi-step plans, and only asks for input when it genuinely needs it. The user states a goal; Nudge figures out how to achieve it.
+
+### What "agentic" means here (implementation philosophy)
+- **Current behavior:** user input → parse one intent → wait for user confirmation → write one event
+- **Agentic behavior:** user states a goal → Nudge plans N actions → checks all for conflicts autonomously → presents a plan summary → executes on confirmation → reports results
+- The user should never have to confirm each event individually when scheduling a batch. One confirmation approves the whole plan.
+- Nudge only surfaces conflicts it cannot resolve on its own. If it can find a clean slot, it does — silently.
+
+---
+
+### 3A: Recurring / batch event scheduling
+**User story:** "Add a 1-hour workout every weekday next week at 6am" or "Schedule standup Monday through Friday at 9am for the next 3 weeks"
+
+**What Nudge does:**
+1. Parses the recurrence pattern from natural language (daily, weekly, specific days, N weeks/months)
+2. Expands the pattern into a list of individual event instances with exact datetimes
+3. Runs `detectConflicts` on ALL instances in one pass before showing the user anything
+4. Presents a **BatchPlanCard** showing: how many events will be created, date range, any conflicts found
+5. Conflicts are handled per-instance: if Monday 6am is taken, auto-suggest Monday 6:30am for that instance only — not the whole series
+6. Single "Confirm all" button creates every event; calendar refreshes once when done
+7. Reports: "Created 5 of 5 workout events" or "Created 4 of 5 — skipped Thursday (conflict with dentist)"
+
+**AI changes:**
+- `parseIntent` needs to return `recurrence` object: `{ type: 'daily'|'weekly'|'custom', days: [], count: N, until: date }`
+- New `AIService.expandRecurrence(intent)` expands recurrence into array of datetime instances
+- New `POST /api/assistant/confirm-batch` route accepts array of event objects, creates them sequentially, returns results array
+
+**Frontend changes:**
+- New `BatchPlanCard` component: shows event list with times, conflict badges, confirm/cancel
+- `useChat.js` handles `batchPlan` response type alongside existing types
+
+---
+
+### 3B: Autonomous conflict resolution loop
+**User story:** "Move my 2pm Tuesday meeting to sometime this week" or user picks a slot that's already taken
+
+**What Nudge does — the agentic loop:**
+1. Detects a conflict on the requested slot
+2. Calls `suggestSlots` to generate alternatives
+3. **Immediately runs `detectConflicts` on each suggestion** — before showing the user anything
+4. Filters out any suggestions that are also conflicted
+5. Shows only clean slots in the ConflictCard
+6. If ALL suggestions are conflicted (rare), runs one more round with tighter constraints, then asks the user
+7. User never sees a "suggested slot" that also has a conflict
+
+**What changes from Phase 2:**
+- `/parse` route: after `suggestSlots` returns, loop `detectConflicts` over each suggestion; filter; if 0 clean → re-call `suggestSlots` with `{ excludeRanges: conflictedSlots }` in context; max 2 iterations
+- `ConflictCard` receives only pre-validated clean slots — no UI change needed
+- `suggestSlots` system prompt updated to accept `excludeRanges` context so second-pass suggestions don't repeat conflicted times
+
+**This is the core agentic behavior:** Nudge reasons through the problem autonomously and only surfaces it to the user when it's stuck, not at every step.
+
+---
+
+### 3C: Goal-oriented scheduling ("fit this in")
+**User story:** "I need a 2-hour deep work block sometime tomorrow" or "Find me time for a 30-minute call with Sarah this week"
+
+**What Nudge does:**
+1. Reads the user's calendar for the target period (already possible via `getEvents`)
+2. Identifies free windows that match the requested duration
+3. Scores slots by quality: prefers mid-morning, avoids back-to-back meetings, respects working hours (8am–7pm default)
+4. Presents top 3 options ranked by score with brief reasoning: "9am–11am — 2 hours before your first meeting" 
+5. User picks one (or says "the first one") → confirm → create
+
+**AI changes:**
+- New `AIService.findFreeSlots(events, duration, preferences)` — takes existing calendar events, returns scored free windows as JSON
+- Prompt instructs model to reason about working hours, meeting density, time-of-day preferences
+- `/parse` route: when action=`find_slot`, fetch events for target range, call `findFreeSlots`, return `slotOptions` array
+
+**Frontend changes:**
+- New `SlotOptionsCard` component: shows 3 ranked options with time + brief label; tapping one populates draft and shows ConfirmCard
+
+---
+
+### 3D: Natural language event editing
+**User story:** "Move my dentist appointment to next Thursday at the same time" or "Make my 3pm meeting an hour longer"
+
+**What Nudge does:**
+1. Parses action=`update`, finds the event on the calendar (same candidate search logic as delete)
+2. Applies the modification: new datetime, new duration, new title, added attendees, or any combination
+3. Checks the new slot for conflicts before writing
+4. Shows an **EditConfirmCard** with before/after: "Dentist: Tue May 26 10am → Thu May 28 10am — Confirm?"
+5. On confirm: calls `calendar.events.patch` (not delete+create — preserves event ID and existing attendees)
+6. Sends update notification emails to attendees if time changed
+
+**Backend changes:**
+- `GoogleCalendarService.updateEvent(eventId, patches)` — calls `calendar.events.patch`
+- `PATCH /api/calendar/events/:id` route (currently stub 501) — implement it
+- `/parse` route: action=`update` → find candidate → apply patches → conflict check → return `updateProposal`
+
+**Frontend changes:**
+- New `EditConfirmCard` component showing before/after diff
+- `useChat.js` handles `updateProposal` response type
+
+---
+
+### Phase 3 implementation order
+Build in this sequence — each step is independently useful and unblocks the next:
+
+1. **3B first** (conflict loop) — zero new UI, pure backend logic change, immediately makes existing conflict flow smarter
+2. **3D second** (event editing) — unlocks the `PATCH` stub, high user value, reuses candidate search from delete
+3. **3A third** (batch scheduling) — highest demo impact, needs BatchPlanCard but logic builds on conflict loop from 3B
+4. **3C last** (find free slots) — most novel AI feature, good capstone, depends on solid event reading from prior phases
+
+---
+
+### Phase 3 new API endpoints
+- `POST /api/assistant/confirm-batch` — create multiple events, return results array
+- `PATCH /api/calendar/events/:id` — update event fields (implements existing stub)
+
+### Phase 3 new frontend components
+- `BatchPlanCard` — shows N events to be created, conflict badges, single confirm
+- `SlotOptionsCard` — shows ranked free slot options with labels
+- `EditConfirmCard` — before/after diff for event updates
+
+### Phase 3 new AIService methods
+- `AIService.expandRecurrence(intent)` → `DateTime[]`
+- `AIService.findFreeSlots(events, duration, preferences)` → scored slot array
+- Updates to `suggestSlots` to accept `excludeRanges` for second-pass conflict avoidance
+
+---
+
+
+---
+
+## Phase 3 AI Implementation Philosophy
+
+> Read this before implementing ANY Phase 3 feature. This is the difference between building a smart agent and a fancy chatbot.
+
+### The core problem with "dumb" AI implementations
+
+Claude Code tends to implement AI features as simple request-response:
+`user input → LLM call → parse JSON → respond`
+
+This produces AI that feels like a form with autocomplete. Phase 3 requires actual agent behavior:
+`user states goal → backend reasons autonomously → executes plan → surfaces only what it cannot resolve`
+
+The user should never see the AI "thinking out loud" or asking for clarification it could resolve itself.
+
+### Principle 1: Lean system prompts, rich dynamic context
+
+Keep base system prompts under 400 tokens. Everything specific to the current request (existing events, conflicts, user timezone, current draft) gets injected dynamically into the user turn — not hardcoded into the system prompt. A bloated system prompt degrades reasoning quality on the actual task.
+
+**Pattern:**
+```
+system: [lean role + output schema + 2-3 few-shot examples]
+user: [CONTEXT: dynamic state] [REQUEST: user's actual message]
+```
+
+### Principle 2: Few-shot examples are non-negotiable
+
+Every AI method needs 2-3 concrete input/output examples in the system prompt. Without them, the model guesses at edge cases. With them, it handles "delete my thing tomorrow" and "move it to sometime next week" and "add an hour to that meeting" reliably.
+
+Bad prompt: "Extract the action from the user's message."
+Good prompt: "Extract the action. Examples: 'delete my 2pm' → action: delete. 'move Tuesday standup to Thursday' → action: update. 'am I free Friday afternoon' → action: query."
+
+### Principle 3: Validation loops happen in the backend, not the frontend
+
+When the AI suggests alternatives, the backend must validate them against real calendar data BEFORE sending to the frontend. The user never sees a "suggested slot" that is also conflicted. This is the core of 3B and applies to 3C as well.
+
+```
+// WRONG — dumb implementation
+const suggestions = await ai.suggestSlots(intent, conflicts);
+return { suggestions }; // might contain conflicted slots
+
+// RIGHT — agentic implementation  
+const suggestions = await ai.suggestSlots(intent, conflicts);
+const cleanSuggestions = suggestions.filter(s =>
+  detectConflicts(events, s).length === 0
+);
+if (cleanSuggestions.length === 0) {
+  // Second pass with excludeRanges — max 2 iterations
+  const excludeRanges = suggestions.map(s => ({ start: s.start_time, end: s.end_time }));
+  const retry = await ai.suggestSlots(intent, conflicts, { excludeRanges });
+  return { suggestions: retry };
+}
+return { suggestions: cleanSuggestions };
+```
+
+### Principle 4: Plan-then-Execute for batch operations (3A)
+
+For recurring/batch events: the AI plans ALL instances first, the backend validates ALL of them, then a single confirmation executes ALL of them. Never confirm one event at a time in a loop.
+
+```
+// 3A flow
+const instances = await ai.expandRecurrence(intent);       // plan
+const validated = instances.map(inst => ({                  // validate all
+  ...inst,
+  conflicts: detectConflicts(events, inst)
+}));
+return { batchPlan: validated };                            // single confirm → execute all
+```
+
+### Principle 5: Fuzzy candidate matching, not exact ID lookup
+
+For delete and update actions, the user will never say an event ID. They say "my dentist appointment" or "the 2pm Tuesday thing". The candidate search must:
+1. Parse whatever time/title hint the AI extracted
+2. Search a window (±90 min for time_known, whole day for date_known, next 7 days for title_only)
+3. Filter by title similarity if AI extracted a title
+4. Return up to 3 candidates for user disambiguation if ambiguous
+
+This logic already exists for delete — 3D (update) must reuse it exactly, not reimplement it.
+
+---
+
+### Prompt templates for each Phase 3 AI method
+
+#### `AIService.suggestSlots(intent, conflicts, options = {})`
+
+```
+system:
+You are a scheduling assistant. Given a scheduling conflict, suggest 3 alternative time slots.
+Return ONLY a JSON array of slot objects: [{"start_time": "ISO8601", "end_time": "ISO8601", "label": "brief human label"}]
+Rules: Stay within working hours (8am–7pm). Prefer the same day first, then next 2 days.
+{{#if excludeRanges}}Avoid these times: {{excludeRanges}}{{/if}}
+Examples:
+- Conflict at 2pm Tuesday → suggest: 3pm Tue, 10am Wed, 2pm Wed
+- Conflict at 9am → suggest: 10am same day, 9am next day, 11am same day
+
+user:
+[INTENT: title="{{title}}" requested={{start}}–{{end}} duration={{duration}}min]
+[CONFLICTS: {{conflictSummary}}]
+[DATE: today is {{localDatetime}}, timezone {{timezone}}]
+Suggest 3 clean alternative slots.
+```
+
+#### `AIService.expandRecurrence(intent)`
+
+```
+system:
+You are a scheduling assistant. Expand a recurring event description into individual event instances.
+Return ONLY a JSON array: [{"title": "...", "start_time": "ISO8601", "end_time": "ISO8601"}]
+Generate every instance explicitly — no recurrence rules, just the flat list of datetimes.
+Examples:
+- "workout every weekday next week at 6am for 1 hour" → 5 objects (Mon–Fri)
+- "standup Mon/Wed/Fri for 2 weeks at 9am 30min" → 6 objects
+
+user:
+[REQUEST: "{{userMessage}}"]
+[PARSED: title="{{title}}" recurrence={{recurrenceObject}} duration={{duration}}min]
+[DATE: today is {{localDatetime}}, timezone {{timezone}}]
+Expand into individual instances.
+```
+
+#### `AIService.findFreeSlots(events, duration, preferences)`
+
+```
+system:
+You are a scheduling assistant. Given a user's calendar events and a requested duration, find the 3 best free time windows.
+Return ONLY a JSON array: [{"start_time": "ISO8601", "end_time": "ISO8601", "score": 0–100, "label": "brief reason"}]
+Scoring rules (higher = better):
+- Mid-morning slots (9am–11am): +30
+- Early afternoon (1pm–3pm): +20
+- Avoids back-to-back (30+ min buffer before next event): +25
+- Within working hours (8am–7pm): required
+- Avoids early morning (<8am) or late evening (>7pm): -50
+
+user:
+[EVENTS: {{JSON.stringify(eventsForPeriod)}}]
+[REQUEST: find {{duration}} min block in {{targetPeriod}}]
+[DATE: today is {{localDatetime}}, timezone {{timezone}}]
+Return top 3 scored free slots with labels.
+```
+
+#### Update intent parsing for 3D (add to existing `parseIntent` system prompt)
+
+Add these examples to the existing few-shot section:
+```
+"move my dentist to next Thursday at the same time" → action: update, title: "dentist", new_date: "next Thursday", preserve_time: true
+"make my 3pm meeting an hour longer" → action: update, time_hint: "3pm", duration_delta: +60
+"rename my standup to team sync" → action: update, title_hint: "standup", new_title: "team sync"
+"move Tuesday standup to Thursday same time" → action: update, title_hint: "standup", day_hint: "Tuesday", new_date: "Thursday", preserve_time: true
+```
+
+---
+
+### Testing philosophy for Phase 3 AI features
+
+AI methods cannot be tested with exact output assertions — the model is non-deterministic. Test the STRUCTURE and CONSTRAINTS instead:
+
+```javascript
+// WRONG
+expect(result.suggestions[0].start_time).toBe('2026-05-27T09:00:00');
+
+// RIGHT
+expect(result.suggestions).toHaveLength(3);
+expect(result.suggestions.every(s => s.start_time && s.end_time)).toBe(true);
+expect(result.suggestions.every(s => {
+  const hour = new Date(s.start_time).getHours();
+  return hour >= 8 && hour <= 19; // within working hours
+})).toBe(true);
+```
+
+For the conflict loop (3B), mock `suggestSlots` to return known conflicted times and assert the backend filters them before responding.
+
+For batch scheduling (3A), mock `expandRecurrence` with a fixed 5-instance array and assert all 5 are conflict-checked before the batch plan is returned.
+
+---
+---
 
 ## Phase 4: Voice Input
 - [ ] Voice input (Web Speech API) — browser-native speech-to-text, no API cost
+
+---
 
 ## API Endpoints (Express)
 
@@ -136,15 +441,18 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 ### Calendar (all require session auth)
 - `GET /api/calendar/events` — Fetch events for date range
 - `POST /api/calendar/events` — Create event (stub 501)
-- `PATCH /api/calendar/events/:id` — Update event (stub 501)
+- `PATCH /api/calendar/events/:id` — Update event (stub 501 → implemented in Phase 3D)
 - `DELETE /api/calendar/events/:id` — Delete event
 - `GET /api/calendar/freebusy` — Check free/busy slots (stub 501)
 
 ### AI Assistant (all require session auth)
 - `POST /api/assistant/parse` — Parse NL input → structured intent + conflicts + candidates + queryResults
 - `POST /api/assistant/confirm` — Execute confirmed create intent; sends email invites
+- `POST /api/assistant/confirm-batch` — Execute batch create (Phase 3A)
 - `POST /api/assistant/chat` — Alias for /parse (same handler, accepts history)
-- `POST /api/assistant/suggest` — Ask AI for open slot suggestions (stub 501)
+- `POST /api/assistant/suggest` — Ask AI for open slot suggestions (stub 501 → used in Phase 3C)
+
+---
 
 ## Project Structure
 ```
@@ -194,6 +502,8 @@ nudge-app/
 └── CLAUDE.md
 ```
 
+---
+
 ## Ground Rules
 - **Never push to GitHub.** User handles all pushes.
 - **TDD for backend.** Write tests before implementation for routes and services.
@@ -204,7 +514,7 @@ nudge-app/
 - Multi-user / team calendars
 - Mobile-native iOS/Android (web-responsive is sufficient)
 - Third-party integrations beyond Google Calendar and Gmail
-- Recurring event management via NL
+- Recurring event management via Google's native recurrence rules (Nudge manages its own instances)
 - Production billing or infrastructure
 
 ## Notes for Implementation
@@ -212,3 +522,4 @@ nudge-app/
 - Currently using `llama-3.3-70b-versatile` via Groq; configurable via `GROQ_MODEL` env var
 - Session storage is in-memory for dev; upgrade to Redis if needed for production
 - Voice input (Phase 4) is free via Web Speech API but browser-limited; text input is primary
+- Phase 3 agentic loop max iterations: 2 (conflict resolution), to avoid infinite loops and excessive API calls
