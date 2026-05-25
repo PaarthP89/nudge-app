@@ -147,7 +147,6 @@ describe('DELETE /api/calendar/events/:id — authenticated', () => {
 
 const STUB_501_ENDPOINTS = [
   { method: 'post', path: '/api/calendar/events' },
-  { method: 'get', path: '/api/calendar/freebusy' }
 ];
 
 describe('Calendar stubs — unauthenticated', () => {
@@ -169,6 +168,61 @@ describe('Calendar stubs — authenticated (not yet implemented)', () => {
       const res = await request(app)[method](path);
       expect(res.status).toBe(501);
     });
+  });
+});
+
+// ── GET /api/calendar/freebusy ────────────────────────────────────────────────
+
+describe('GET /api/calendar/freebusy — unauthenticated', () => {
+  beforeEach(() => { mockIsAuthenticated = false; });
+
+  it('returns 401', async () => {
+    const res = await request(app).get('/api/calendar/freebusy?start=2026-05-26T00:00:00.000Z&end=2026-05-26T23:59:59.000Z');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('GET /api/calendar/freebusy — authenticated', () => {
+  beforeEach(() => {
+    mockIsAuthenticated = true;
+    mockListEvents.mockReset();
+  });
+
+  it('returns 400 when start param is missing', async () => {
+    const res = await request(app).get('/api/calendar/freebusy?end=2026-05-26T23:59:59.000Z');
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when end param is missing', async () => {
+    const res = await request(app).get('/api/calendar/freebusy?start=2026-05-26T00:00:00.000Z');
+    expect(res.status).toBe(400);
+  });
+
+  it('returns events for the requested date range', async () => {
+    const mockEvents = [
+      { id: 'ev1', title: 'Morning sync', start: '2026-05-26T09:00:00Z', end: '2026-05-26T09:30:00Z', allDay: false }
+    ];
+    mockListEvents.mockResolvedValue(mockEvents);
+
+    const res = await request(app).get(
+      '/api/calendar/freebusy?start=2026-05-26T00:00:00.000Z&end=2026-05-26T23:59:59.000Z'
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('events');
+    expect(res.body.events).toHaveLength(1);
+    expect(res.body.events[0].id).toBe('ev1');
+  });
+
+  it('returns empty events array when calendar is free', async () => {
+    mockListEvents.mockResolvedValue([]);
+
+    const res = await request(app).get(
+      '/api/calendar/freebusy?start=2026-05-26T00:00:00.000Z&end=2026-05-26T23:59:59.000Z'
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.events).toEqual([]);
   });
 });
 

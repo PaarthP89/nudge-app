@@ -160,6 +160,26 @@ export default function useChat() {
     }
   }, []);
 
+  const confirmSlot = useCallback(async (slot, slotOptions) => {
+    const intent = {
+      action: 'create',
+      title: slotOptions.title,
+      start_time: slot.start_time,
+      end_time: slot.end_time,
+      duration_minutes: slotOptions.duration,
+      attendees: slotOptions.attendees || [],
+      location: null,
+      confidence: 1.0,
+      date_known: true,
+      time_known: true,
+    };
+    const result = await confirmEvent(intent);
+    if (result.success) {
+      historyRef.current = [];
+    }
+    return result;
+  }, [confirmEvent]);
+
   const pickSuggestion = useCallback((suggestion, baseIntent) => {
     if (!baseIntent) return;
     const updatedDraft = {
@@ -219,7 +239,7 @@ export default function useChat() {
         { message: messageToSend, history: historyRef.current, now: clientNow, timezone: clientTimezone },
         { withCredentials: true }
       );
-      const { intent, reply, conflicts, suggestions, candidates, queryResults, updateProposal, batchPlan } = res.data;
+      const { intent, reply, conflicts, suggestions, candidates, queryResults, updateProposal, batchPlan, slotOptions } = res.data;
 
       const draft = mergeDraft(draftRef.current, intent);
       draftRef.current = draft;
@@ -284,6 +304,11 @@ export default function useChat() {
         newMessages.push(makeMessage('assistant', '', 'editConfirm', updateProposal));
       }
 
+      // Slot options — show ranked free windows for user to pick.
+      if (intent.action === 'find_slot' && slotOptions) {
+        newMessages.push(makeMessage('assistant', '', 'slotOptions', slotOptions));
+      }
+
       setMessages(prev => [...prev, ...newMessages]);
     } catch (err) {
       if (err.response?.status === 401) {
@@ -305,5 +330,5 @@ export default function useChat() {
     historyRef.current = [];
   }, []);
 
-  return { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, cancelDraft, pickSuggestion };
+  return { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, confirmSlot, cancelDraft, pickSuggestion };
 }

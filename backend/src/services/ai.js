@@ -9,15 +9,16 @@ Current date/time: ${now}
 User's timezone: ${timezone}
 
 Valid actions:
-- "create"  — user wants to schedule, add, or book a new event
-- "delete"  — user wants to remove, cancel, or delete an existing event
-- "update"  — user wants to move, reschedule, or change an existing event
-- "query"   — user wants to know what is on their calendar
-- "unknown" — message has nothing to do with calendar management
+- "create"     — user wants to schedule, add, or book a new event
+- "delete"     — user wants to remove, cancel, or delete an existing event
+- "update"     — user wants to move, reschedule, or change an existing event
+- "query"      — user wants to know what is on their calendar
+- "find_slot"  — user wants Nudge to find a free time window for them (does NOT know when; wants suggestions)
+- "unknown"    — message has nothing to do with calendar management
 
 Return this exact JSON schema (all fields required):
 {
-  "action": "create" | "delete" | "update" | "query" | "unknown",
+  "action": "create" | "delete" | "update" | "query" | "find_slot" | "unknown",
   "title": string | null,
   "start_time": ISO 8601 datetime string with timezone offset | null,
   "end_time": ISO 8601 datetime string with timezone offset | null,
@@ -27,11 +28,15 @@ Return this exact JSON schema (all fields required):
   "confidence": number between 0.0 and 1.0,
   "date_known": boolean,
   "time_known": boolean,
-  "recurrence": null | { "type": "daily" | "weekly" | "custom", "days": string[], "count": number | null, "until": string | null, "interval": number }
+  "recurrence": null | { "type": "daily" | "weekly" | "custom", "days": string[], "count": number | null, "until": string | null, "interval": number },
+  "target_period": string | null,
+  "preferences": { "avoid_back_to_back": boolean, "preferred_time": "morning" | "afternoon" | "evening" | null } | null
 }
 - recurrence: set for recurring/repeating create events; null for all other events.
 - recurrence.days: specific days of week (e.g. ["Monday","Wednesday","Friday"]); empty array for daily.
 - recurrence.count: total number of instances (e.g. 5 for a work week); null if not specified.
+- target_period: for find_slot only — the natural language period the user wants to search, e.g. "tomorrow", "today", "this week", "next Monday". Null for all other actions.
+- preferences: for find_slot only — scheduling preferences. Null for other actions.
 
 For update action, also include these fields (omit or null for other actions):
 {
@@ -76,6 +81,9 @@ Action mapping examples — natural language varies widely, map it correctly:
 - "do I have anything tomorrow afternoon?" → action: "query"
 - "show me my Friday schedule" → action: "query"
 - "what do I have this week?" → action: "query"
+- "find me a 2-hour deep work block tomorrow" → action: "find_slot", title: "deep work block", duration_minutes: 120, target_period: "tomorrow", preferences: {"avoid_back_to_back": true, "preferred_time": "morning"}
+- "when am I free for an hour today?" → action: "find_slot", title: null, duration_minutes: 60, target_period: "today", preferences: {"avoid_back_to_back": true, "preferred_time": null}
+- "find time for a 30-min call with Sarah this week" → action: "find_slot", title: "call with Sarah", duration_minutes: 30, attendees: ["Sarah"], target_period: "this week", preferences: {"avoid_back_to_back": true, "preferred_time": null}
 - "move my 3pm to 4pm tomorrow" → action: "update", time_hint: "3pm", start_delta_minutes: 60
 - "reschedule the standup to next Tuesday" → action: "update", title_hint: "standup", new_date: "next Tuesday"
 - "move my dentist to next Thursday at the same time" → action: "update", title_hint: "dentist", new_date: "next Thursday", preserve_time: true
@@ -102,7 +110,7 @@ function normalizeAIResponse(rawText) {
   if (!Array.isArray(parsed.attendees)) {
     throw new Error('AI response attendees must be an array');
   }
-  const VALID_ACTIONS = ['create', 'delete', 'update', 'query', 'unknown'];
+  const VALID_ACTIONS = ['create', 'delete', 'update', 'query', 'find_slot', 'unknown'];
   if (!VALID_ACTIONS.includes(parsed.action)) {
     throw new Error(`Unexpected action value: ${parsed.action}`);
   }
@@ -128,6 +136,8 @@ function normalizeAIResponse(rawText) {
     preserve_time:          Boolean(parsed.preserve_time),
     duration_delta_minutes: typeof parsed.duration_delta_minutes === 'number' ? parsed.duration_delta_minutes : null,
     start_delta_minutes:    typeof parsed.start_delta_minutes    === 'number' ? parsed.start_delta_minutes    : null,
+    target_period:          parsed.target_period  ?? null,
+    preferences:            parsed.preferences    ?? null,
   };
 }
 
@@ -184,6 +194,12 @@ function buildIntentReply(intent) {
     const hint = intent.title_hint ?? intent.title;
     if (hint) return `Looking for "${hint}" on your calendar…`;
     return "Looking for that event on your calendar…";
+  }
+
+  if (intent.action === 'find_slot') {
+    const dur = intent.duration_minutes ? `${intent.duration_minutes}-minute ` : '';
+    const period = intent.target_period || 'today';
+    return `Looking for a free ${dur}window ${period}…`;
   }
 
   if (intent.action === 'query') {
@@ -323,6 +339,74 @@ Expand into all individual instances.`;
         start_time: inst.start_time,
         end_time: inst.end_time,
       }));
+  }
+
+  async findFreeSlots(events, duration, preferences = {}, { targetPeriod = 'today', now = '', timezone = 'UTC' } = {}) {
+    const systemPrompt = `You are a scheduling assistant. Given a user's calendar events and a requested duration, find the 3 best available time windows and score them.
+
+Return ONLY a valid JSON array with no other text:
+[{"start_time":"ISO8601 with timezone offset","end_time":"ISO8601 with timezone offset","score":0-100,"label":"brief human reason"}]
+
+Scoring rules (apply all that match, sum the scores):
+- Mid-morning slot (9:00am–11:00am): +30 points
+- Early afternoon (1:00pm–3:00pm): +20 points
+- 30+ minute buffer before next event: +25 points
+- 30+ minute buffer after previous event: +15 points
+- Within core working hours (9am–6pm): +10 points
+- Outside working hours (before 8am or after 7pm): -100 (exclude entirely)
+- Back-to-back with another event (< 15 min gap): -30 points
+
+Sort by score descending. Return exactly 3 results (or fewer if calendar is very full).
+The label should explain WHY this slot is good: "2 hours before your first meeting" or "quiet morning block with no meetings nearby"
+
+Examples:
+- Calendar with 10am meeting and 2pm meeting, need 1 hour: prefer 9am (before first), 11am (between), or 3pm (after second)
+- Empty calendar, need 2 hours: prefer 9am–11am (mid-morning), 1pm–3pm (early afternoon)`;
+
+    const eventsJson = JSON.stringify(events.map(ev => ({
+      title: ev.title,
+      start: ev.start,
+      end: ev.end,
+      allDay: ev.allDay
+    })));
+
+    const userMsg = `[CALENDAR: ${eventsJson}]
+[REQUEST: find a free ${duration} minute window in ${targetPeriod}]
+[PREFERENCES: ${JSON.stringify(preferences)}]
+[DATE: today is ${now}, timezone ${timezone}]
+Find and score the top 3 free windows. Exclude times before 8am or after 7pm.`;
+
+    const completion = await this.groq.chat.completions.create({
+      model: this.modelName,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMsg }
+      ],
+      temperature: 0.2,
+      max_tokens: 600
+    });
+
+    const rawText = completion.choices[0].message.content;
+    let text = rawText.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return [];
+    }
+
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter(s => s && s.start_time && s.end_time)
+      .map(s => ({
+        start_time: s.start_time,
+        end_time: s.end_time,
+        score: typeof s.score === 'number' ? s.score : 50,
+        label: s.label || new Date(s.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+      }))
+      .slice(0, 3);
   }
 
   async chat(messages, { now, timezone }) {

@@ -69,6 +69,38 @@ function computeUpdatePatches(candidate, intent) {
   return patches;
 }
 
+function parseFindSlotRange(intent, { now }) {
+  if (intent.date_known && intent.start_time) {
+    const d = new Date(intent.start_time);
+    return {
+      start: new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0),
+      end:   new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59)
+    };
+  }
+  const period = (intent.target_period || '').toLowerCase();
+  const clientRef = now ? new Date(now) : null;
+  const ref = (clientRef && !isNaN(clientRef.getTime())) ? clientRef : new Date();
+  if (period.includes('week')) {
+    const monday = new Date(ref);
+    const dow = monday.getDay();
+    monday.setDate(monday.getDate() + (dow === 0 ? -6 : 1 - dow));
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 999);
+    return { start: monday, end: sunday };
+  }
+  const dayStart = new Date(ref);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(ref);
+  dayEnd.setHours(23, 59, 59, 999);
+  return { start: dayStart, end: dayEnd };
+}
+
+function slotsOverlap(slot, ev) {
+  return new Date(slot.start_time) < new Date(ev.end) && new Date(slot.end_time) > new Date(ev.start);
+}
+
 const MAX_MESSAGE_LEN = 1000;
 
 function getContext(req) {
@@ -128,6 +160,7 @@ async function runParse(req, res, next) {
       else if (/\b(schedule|book|create|add|set up|plan)\b/.test(lc)) intent.action = 'create';
       else if (/\b(move|reschedule|change|update|shift|push back)\b/.test(lc)) intent.action = 'update';
       else if (/\b(what|show|do i have|check my|look up)\b.*\b(calendar|schedule|today|tomorrow|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lc)) intent.action = 'query';
+      else if (/\b(find me|find time|free time|open slot|available|when am i free|fit in)\b/.test(lc)) intent.action = 'find_slot';
       if (intent.action !== 'unknown') intent.confidence = Math.max(intent.confidence, 0.5);
     }
 
@@ -138,6 +171,7 @@ async function runParse(req, res, next) {
     let candidates = [];
     let loopIterations = 0;
     let batchPlan = null;
+    let slotOptions = null;
 
     if (intent.action === 'create' && intent.recurrence) {
       try {
@@ -379,6 +413,40 @@ async function runParse(req, res, next) {
       }
     }
 
+    if (intent.action === 'find_slot') {
+      try {
+        const { accessToken, refreshToken } = req.user;
+        const calService = new GoogleCalendarService(accessToken, refreshToken);
+        const ctx = getContext(req);
+        const { start, end } = parseFindSlotRange(intent, ctx);
+        const events = await calService.listEvents(start, end);
+        const duration = intent.duration_minutes || 60;
+        const rawSlots = await service.findFreeSlots(events, duration, intent.preferences || {}, {
+          targetPeriod: intent.target_period || 'today',
+          ...ctx
+        });
+        const validSlots = rawSlots.filter(slot =>
+          !events.some(ev => !ev.allDay && slotsOverlap(slot, ev))
+        );
+        slotOptions = {
+          slots: validSlots.slice(0, 3),
+          title: intent.title,
+          duration,
+          attendees: intent.attendees || []
+        };
+        if (validSlots.length > 0) {
+          const n = validSlots.length;
+          reply = `Found ${n} option${n > 1 ? 's' : ''} for you:`;
+        } else {
+          reply = "I couldn't find any free time in that window. Try a different day?";
+        }
+      } catch (err) {
+        console.error('[assistant] findFreeSlots error:', err.message);
+        slotOptions = { slots: [], title: intent.title, duration: intent.duration_minutes || 60, attendees: intent.attendees || [] };
+        reply = "Couldn't check your calendar for free time. Please try again.";
+      }
+    }
+
     let queryResults = null;
 
     if (intent.action === 'query' && intent.date_known && intent.start_time) {
@@ -400,7 +468,7 @@ async function runParse(req, res, next) {
       }
     }
 
-    res.json({ intent, reply, conflicts, suggestions, candidates, queryResults, loopIterations, updateProposal, batchPlan });
+    res.json({ intent, reply, conflicts, suggestions, candidates, queryResults, loopIterations, updateProposal, batchPlan, slotOptions });
   } catch (err) {
     console.error('[assistant] AI service error:', err.status, err.statusCode, err.message);
     const msg = String(err.message || '');

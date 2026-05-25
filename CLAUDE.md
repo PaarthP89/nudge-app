@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 2 complete (2026-05-22). Phase 3B complete (2026-05-25). Phase 3D complete (2026-05-25). Phase 3A complete (2026-05-25). All MVP + enhanced UX features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, and recurring/batch event scheduling. Phase 3B adds autonomous conflict resolution. Phase 3D adds NL event editing. Phase 3A adds batch scheduling: user says "standup every weekday at 10am" → AI expands recurrence → conflict-checks all instances → BatchPlanCard shows plan with ⚠ badges → single confirm creates all events via `POST /confirm-batch`. 128 tests passing.
+**Status:** Phase 2 complete (2026-05-22). Phase 3A/3B/3C/3D all complete (2026-05-25). All MVP + enhanced UX + agentic features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, and goal-oriented free-slot finding. Phase 3C adds `find_slot`: user says "find me a 2-hour block tomorrow" → AI reads calendar → scores free windows → SlotOptionsCard shows top 3 options with reasoning → single click schedules. 137 tests passing.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -19,7 +19,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - **Node.js + Express** — REST API, session management, OAuth proxy
 - **express-session** — session management
 - **Passport.js** — Google OAuth 2.0 authentication
-- **Testing:** Jest + Supertest (128 tests passing)
+- **Testing:** Jest + Supertest (137 tests passing)
 
 ### AI & External Services
 - **Groq SDK (llama-3.3-70b-versatile)** — intent parsing, conflict resolution, rescheduling suggestions (free tier, 30 RPM). Model is configurable via `GROQ_MODEL` env var. Service abstracted as `AIService` — swap provider by editing `src/services/ai.js` only.
@@ -55,7 +55,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - Today indicator and today button; today circle in date
 - [x] Text-based NL scheduling input (chat interface) — ✓ Complete (2026-05-22)
   - ChatPanel component with message thread, typing indicator, input row
-  - Message type system: text | intent | conflict | confirm | deleteConfirm | queryResult
+  - Message type system: text | intent | conflict | confirm | deleteConfirm | queryResult | editConfirm | batchPlan | slotOptions
 - [x] AI intent parsing (extract: action, title, attendees, time, duration, location) — ✓ Complete (2026-05-22)
   - Groq via `AIService` (`src/services/ai.js`) — provider-agnostic; swap model via `GROQ_MODEL` env var
   - Currently using `llama-3.3-70b-versatile` (upgraded from 8b for reliable instruction-following)
@@ -67,8 +67,8 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - Running draft intent (useRef) accumulates fields across turns via `mergeDraft()`; date+time from separate turns are combined when both eventually known
   - Draft cleared only on successful confirm or cancel
   - Context injected as compact `[DRAFT:title="x" datetime=...]` prefix — prevents model from misreading label text as event content
-  - System prompt includes concrete action-mapping examples for all 5 action types
-  - Keyword override safety net in route: if model returns `unknown` but message contains clear action keyword (delete/schedule/etc.), action is corrected before downstream logic runs
+  - System prompt includes concrete action-mapping examples for all 6 action types (create, delete, update, query, find_slot, unknown)
+  - Keyword override safety net in route: if model returns `unknown` but message contains clear action keyword (delete/schedule/find me/free time/etc.), action is corrected before downstream logic runs
 - [x] Conflict detection (query existing events, flag overlaps) — ✓ Complete (2026-05-22)
   - `detectConflicts` pure function in googleCalendar.js; skips all-day events
   - Overlap: `eventStart < intentEnd && eventEnd > intentStart`
@@ -183,23 +183,27 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 ---
 
-### 3C: Goal-oriented scheduling ("fit this in")
+### 3C: Goal-oriented scheduling ("fit this in") ✓ Complete (2026-05-25)
 **User story:** "I need a 2-hour deep work block sometime tomorrow" or "Find me time for a 30-minute call with Sarah this week"
 
 **What Nudge does:**
 1. Reads the user's calendar for the target period (already possible via `getEvents`)
 2. Identifies free windows that match the requested duration
 3. Scores slots by quality: prefers mid-morning, avoids back-to-back meetings, respects working hours (8am–7pm default)
-4. Presents top 3 options ranked by score with brief reasoning: "9am–11am — 2 hours before your first meeting" 
-5. User picks one (or says "the first one") → confirm → create
+4. Presents top 3 options ranked by score with brief reasoning: "9am–11am — 2 hours before your first meeting"
+5. User clicks one → event scheduled immediately (no second confirm step)
+6. Email invites sent if attendees were specified
 
-**AI changes:**
-- New `AIService.findFreeSlots(events, duration, preferences)` — takes existing calendar events, returns scored free windows as JSON
-- Prompt instructs model to reason about working hours, meeting density, time-of-day preferences
-- `/parse` route: when action=`find_slot`, fetch events for target range, call `findFreeSlots`, return `slotOptions` array
-
-**Frontend changes:**
-- New `SlotOptionsCard` component: shows 3 ranked options with time + brief label; tapping one populates draft and shows ConfirmCard
+**What changed:**
+- `parseIntent` schema: added `find_slot` action, `target_period` string, `preferences` object `{ avoid_back_to_back, preferred_time }`; 3 new few-shot examples
+- `normalizeAIResponse`: `find_slot` added to valid actions; passes through `target_period` and `preferences`
+- `buildIntentReply` for `find_slot`: "Looking for a free X-minute window [period]…"
+- `AIService.findFreeSlots(events, duration, preferences, { targetPeriod, now, timezone })` — calls Groq with scored slot prompt; strips code fences; returns `[{start_time, end_time, score, label}]`; returns `[]` on invalid JSON (non-fatal)
+- `GET /api/calendar/freebusy` — implemented (was 501 stub); accepts `start`/`end` ISO params, returns `{ events, start, end }`
+- `/parse` route: `find_slot` handler — `parseFindSlotRange(intent, ctx)` converts `target_period`/`date_known` to a day range; fetches events; calls `findFreeSlots`; validates all returned slots against real calendar (filters AI-hallucinated overlaps); returns `slotOptions: { slots, title, duration, attendees }`; keyword safety net for "find me / free time / open slot / when am I free"
+- `SlotOptionsCard.jsx` — shows title + attendees header, up to 3 slot buttons each with date+time and reasoning label; selecting a slot fires `POST /api/assistant/confirm` directly (no second confirm step); handles idle/loading/done/error/cancelled states
+- `useChat.js`: `confirmSlot(slot, slotOptions)` builds create intent from slot + metadata, calls `confirmEvent`, clears draft + history; handles `slotOptions` response → `slotOptions` message type
+- 9 new TDD tests (3 in `ai.test.js`, 4 in `assistant.test.js`, 2 in `calendar.test.js`); 137 tests total, all passing
 
 ---
 
@@ -233,26 +237,24 @@ Build in this sequence — each step is independently useful and unblocks the ne
 1. ~~**3B first** (conflict loop)~~ ✓ Complete (2026-05-25)
 2. ~~**3D next** (event editing)~~ ✓ Complete (2026-05-25)
 3. ~~**3A third** (batch scheduling)~~ ✓ Complete (2026-05-25)
-4. **3C last** (find free slots) — most novel AI feature, good capstone, depends on solid event reading from prior phases
+4. ~~**3C last** (find free slots)~~ ✓ Complete (2026-05-25)
 
 ---
 
 ### Phase 3 new API endpoints
 - ~~`POST /api/assistant/confirm-batch` — create multiple events, return results array~~ ✓ Complete (2026-05-25)
-- `PATCH /api/calendar/events/:id` — update event fields (implements existing stub)
+- ~~`PATCH /api/calendar/events/:id` — update event fields~~ ✓ Complete (2026-05-25)
+- ~~`GET /api/calendar/freebusy` — returns events for a date range (was 501 stub)~~ ✓ Complete (2026-05-25)
 
 ### Phase 3 new frontend components
 - ~~`BatchPlanCard` — shows N events to be created, conflict badges, single confirm~~ ✓ Complete (2026-05-25)
-- `SlotOptionsCard` — shows ranked free slot options with labels
+- ~~`SlotOptionsCard` — shows ranked free slot options with labels; single click schedules~~ ✓ Complete (2026-05-25)
 - ~~`EditConfirmCard` — before/after diff for event updates~~ ✓ Complete (2026-05-25)
 
 ### Phase 3 new AIService methods
 - ~~`AIService.expandRecurrence(intent)` → `DateTime[]`~~ ✓ Complete (2026-05-25)
-- `AIService.findFreeSlots(events, duration, preferences)` → scored slot array
-- Updates to `suggestSlots` to accept `excludeRanges` for second-pass conflict avoidance
-
----
-
+- ~~`AIService.findFreeSlots(events, duration, preferences)` → scored slot array~~ ✓ Complete (2026-05-25)
+- ~~Updates to `suggestSlots` to accept `excludeRanges` for second-pass conflict avoidance~~ ✓ Complete (2026-05-25)
 
 ---
 
@@ -447,16 +449,16 @@ For batch scheduling (3A), mock `expandRecurrence` with a fixed 5-instance array
 ### Calendar (all require session auth)
 - `GET /api/calendar/events` — Fetch events for date range
 - `POST /api/calendar/events` — Create event (stub 501)
-- `PATCH /api/calendar/events/:id` — Update event (implemented in Phase 3D)
+- `PATCH /api/calendar/events/:id` — Update event (Phase 3D)
 - `DELETE /api/calendar/events/:id` — Delete event
-- `GET /api/calendar/freebusy` — Check free/busy slots (stub 501)
+- `GET /api/calendar/freebusy` — Fetch events for a date range; accepts `start`/`end` ISO params, returns `{ events, start, end }` (Phase 3C)
 
 ### AI Assistant (all require session auth)
-- `POST /api/assistant/parse` — Parse NL input → structured intent + conflicts + candidates + queryResults
-- `POST /api/assistant/confirm` — Execute confirmed create intent; sends email invites
-- `POST /api/assistant/confirm-batch` — Execute batch create (Phase 3A)
+- `POST /api/assistant/parse` — Parse NL input → `{ intent, reply, conflicts, suggestions, candidates, queryResults, updateProposal, batchPlan, slotOptions, loopIterations }`
+- `POST /api/assistant/confirm` — Execute confirmed create intent; sends email invites; returns `{ event, invitesSent, inviteErrors }`
+- `POST /api/assistant/confirm-batch` — Execute batch create (Phase 3A); returns `{ results, summary }`
 - `POST /api/assistant/chat` — Alias for /parse (same handler, accepts history)
-- `POST /api/assistant/suggest` — Ask AI for open slot suggestions (stub 501 → used in Phase 3C)
+- `POST /api/assistant/suggest` — stub 501 (not used; 3C's find_slot goes through /parse)
 
 ---
 
@@ -495,7 +497,10 @@ nudge-app/
 │   │   │   │   └── CalendarView.css
 │   │   │   └── Chat/
 │   │   │       ├── ChatPanel.jsx
-│   │   │       └── ChatPanel.css
+│   │   │       ├── ChatPanel.css
+│   │   │       ├── BatchPlanCard.jsx
+│   │   │       ├── EditConfirmCard.jsx
+│   │   │       └── SlotOptionsCard.jsx
 │   │   ├── pages/
 │   │   ├── hooks/
 │   │   │   ├── useCalendar.js
@@ -529,3 +534,6 @@ nudge-app/
 - Session storage is in-memory for dev; upgrade to Redis if needed for production
 - Voice input (Phase 4) is free via Web Speech API but browser-limited; text input is primary
 - Phase 3 agentic loop max iterations: 2 (conflict resolution), to avoid infinite loops and excessive API calls
+- `find_slot` (3C) is handled by the existing `/parse` endpoint, not `/suggest`; `/suggest` remains a 501 stub
+- `parseFindSlotRange` in `assistant.js` uses a NaN guard when parsing `now` — the client sends a human-readable locale string ("Friday, May 26, 2026 at 8:09 PM PDT") that `new Date()` cannot reliably parse in Node.js; falls back to server time
+- **Hook ordering gotcha in `useChat.js`:** `confirmSlot` must be declared AFTER `confirmEvent` because it closes over it. `const` is not hoisted — placing `confirmSlot` before `confirmEvent` causes a temporal dead zone crash that breaks the entire chat panel on load

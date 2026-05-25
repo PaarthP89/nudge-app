@@ -66,10 +66,12 @@ beforeEach(() => {
   const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
   const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
   const suggestSlotsMock = jest.fn().mockResolvedValue([]);
+  const findFreeSlotsMock = jest.fn().mockResolvedValue([]);
   AIService.mockImplementation(() => ({
     parseIntent: parseIntentMock,
     chat: chatMock,
-    suggestSlots: suggestSlotsMock
+    suggestSlots: suggestSlotsMock,
+    findFreeSlots: findFreeSlotsMock,
   }));
   AIService.buildIntentReply.mockReturnValue('Got it — mock reply');
   AIService._lastParseIntent = parseIntentMock;
@@ -1045,5 +1047,110 @@ describe('POST /api/assistant/parse — 3D event editing', () => {
     expect(res.body.updateProposal).not.toBeNull();
     expect(res.body.updateProposal.conflicts).toBeDefined();
     expect(res.body.updateProposal.conflicts.length).toBeGreaterThan(0);
+  });
+});
+
+// ── 3C: find_slot (goal-oriented scheduling) ──────────────────────────────────
+
+const FIND_SLOT_INTENT = {
+  action: 'find_slot',
+  title: 'deep work',
+  start_time: '2026-05-26T00:00:00-07:00',
+  end_time: null,
+  duration_minutes: 120,
+  attendees: [],
+  location: null,
+  confidence: 0.9,
+  date_known: true,
+  time_known: false,
+  target_period: 'tomorrow',
+  preferences: { avoid_back_to_back: true, preferred_time: 'morning' },
+  recurrence: null,
+};
+
+const MOCK_FREE_SLOTS = [
+  { start_time: '2026-05-26T09:00:00-07:00', end_time: '2026-05-26T11:00:00-07:00', score: 85, label: '2 hours before your first meeting' },
+  { start_time: '2026-05-26T13:00:00-07:00', end_time: '2026-05-26T15:00:00-07:00', score: 70, label: 'quiet early afternoon' },
+  { start_time: '2026-05-26T15:30:00-07:00', end_time: '2026-05-26T17:30:00-07:00', score: 50, label: 'late afternoon' },
+];
+
+describe('POST /api/assistant/parse — 3C find_slot', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('action=find_slot returns slotOptions in response', async () => {
+    const findFreeSlotsMock = jest.fn().mockResolvedValue(MOCK_FREE_SLOTS);
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: findFreeSlotsMock,
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'find me a 2-hour deep work block tomorrow' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.slotOptions).toBeDefined();
+    expect(res.body.slotOptions).not.toBeNull();
+    expect(Array.isArray(res.body.slotOptions.slots)).toBe(true);
+    expect(res.body.slotOptions.slots.length).toBeLessThanOrEqual(3);
+    expect(res.body.slotOptions.title).toBe('deep work');
+    expect(res.body.slotOptions.duration).toBe(120);
+    expect(findFreeSlotsMock).toHaveBeenCalled();
+  });
+
+  it('find_slot filters slots that overlap existing events', async () => {
+    const CALENDAR_EVENT = {
+      id: 'ev-busy', title: 'Morning meeting',
+      start: '2026-05-26T09:00:00-07:00', end: '2026-05-26T11:00:00-07:00',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+    // AI returns 2 slots: one overlaps CALENDAR_EVENT, one is clean
+    const SLOTS_WITH_OVERLAP = [
+      { start_time: '2026-05-26T09:00:00-07:00', end_time: '2026-05-26T11:00:00-07:00', score: 90, label: 'conflicts with morning meeting' },
+      { start_time: '2026-05-26T13:00:00-07:00', end_time: '2026-05-26T15:00:00-07:00', score: 70, label: 'clean afternoon slot' },
+    ];
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue(SLOTS_WITH_OVERLAP),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CALENDAR_EVENT])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'find me a 2-hour block tomorrow' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.slotOptions.slots).toHaveLength(1);
+    expect(res.body.slotOptions.slots[0].label).toBe('clean afternoon slot');
+  });
+
+  it('find_slot returns empty slots array gracefully when AI finds nothing', async () => {
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue([]),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'find me time this week' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.slotOptions).toBeDefined();
+    expect(res.body.slotOptions.slots).toHaveLength(0);
   });
 });

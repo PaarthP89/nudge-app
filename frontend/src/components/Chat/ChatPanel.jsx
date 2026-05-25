@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import useChat from '../../hooks/useChat';
 import EditConfirmCard from './EditConfirmCard';
 import BatchPlanCard from './BatchPlanCard';
+import SlotOptionsCard from './SlotOptionsCard';
 import './ChatPanel.css';
 
 function formatTime(dateStr) {
@@ -295,7 +296,7 @@ function DeleteConfirmCard({ payload, onConfirmDelete, onCancel }) {
 
 // ─── MessageBubble ────────────────────────────────────────────────────────────
 
-function MessageBubble({ message, onConfirm, onConfirmDelete, onConfirmUpdate, onConfirmBatch, onCancelDraft, onPickSuggestion }) {
+function MessageBubble({ message, onConfirm, onConfirmDelete, onConfirmUpdate, onConfirmBatch, onConfirmSlot, onCancelDraft, onPickSuggestion }) {
   const isUser = message.role === 'user';
 
   return (
@@ -340,6 +341,13 @@ function MessageBubble({ message, onConfirm, onConfirmDelete, onConfirmUpdate, o
             onCancel={onCancelDraft}
           />
         )}
+        {message.type === 'slotOptions' && (
+          <SlotOptionsCard
+            payload={message.payload}
+            onSelect={(slot) => onConfirmSlot(slot, message.payload)}
+            onCancel={onCancelDraft}
+          />
+        )}
         <span className="msg-time">
           {message.timestamp.toLocaleTimeString(undefined, {
             hour: 'numeric', minute: '2-digit'
@@ -366,7 +374,7 @@ function TypingIndicator() {
 
 export default function ChatPanel() {
   const [input, setInput] = useState('');
-  const { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, cancelDraft, pickSuggestion } = useChat();
+  const { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, confirmSlot, cancelDraft, pickSuggestion } = useChat();
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -406,6 +414,7 @@ export default function ChatPanel() {
             onConfirmDelete={confirmDelete}
             onConfirmUpdate={confirmUpdate}
             onConfirmBatch={confirmBatch}
+            onConfirmSlot={confirmSlot}
             onCancelDraft={cancelDraft}
             onPickSuggestion={pickSuggestion}
           />

@@ -195,6 +195,92 @@ describe('buildParsePrompt', () => {
   });
 });
 
+// ─── AIService.findFreeSlots ──────────────────────────────────────────────────
+
+describe('AIService.findFreeSlots', () => {
+  const EVENTS = [
+    {
+      id: 'ev1', title: 'Morning meeting',
+      start: '2026-05-26T10:00:00-07:00', end: '2026-05-26T10:30:00-07:00',
+      allDay: false
+    },
+    {
+      id: 'ev2', title: 'Afternoon sync',
+      start: '2026-05-26T14:00:00-07:00', end: '2026-05-26T15:00:00-07:00',
+      allDay: false
+    }
+  ];
+
+  const MOCK_SLOTS = [
+    { start_time: '2026-05-26T09:00:00-07:00', end_time: '2026-05-26T11:00:00-07:00', score: 85, label: '2 hours before your first meeting' },
+    { start_time: '2026-05-26T11:00:00-07:00', end_time: '2026-05-26T13:00:00-07:00', score: 70, label: 'quiet mid-morning block' },
+    { start_time: '2026-05-26T15:30:00-07:00', end_time: '2026-05-26T17:30:00-07:00', score: 55, label: 'after afternoon sync' },
+  ];
+
+  beforeEach(() => {
+    MockGroq.mockClear();
+  });
+
+  it('returns array of scored slots with required fields', async () => {
+    const service = new AIServiceClass();
+    const groqInstance = MockGroq.mock.results[MockGroq.mock.results.length - 1].value;
+    groqInstance.chat.completions.create.mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify(MOCK_SLOTS) } }]
+    });
+
+    const result = await service.findFreeSlots(EVENTS, 120, {}, {
+      targetPeriod: 'tomorrow',
+      now: 'Tuesday, May 26, 2026 at 8:00 AM PDT',
+      timezone: 'America/Los_Angeles'
+    });
+
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBeGreaterThan(0);
+    result.forEach(slot => {
+      expect(typeof slot.start_time).toBe('string');
+      expect(typeof slot.end_time).toBe('string');
+      expect(typeof slot.score).toBe('number');
+      expect(typeof slot.label).toBe('string');
+      expect(isNaN(new Date(slot.start_time).getTime())).toBe(false);
+      expect(isNaN(new Date(slot.end_time).getTime())).toBe(false);
+    });
+  });
+
+  it('handles code-fence-wrapped JSON from the model', async () => {
+    const service = new AIServiceClass();
+    const groqInstance = MockGroq.mock.results[MockGroq.mock.results.length - 1].value;
+    groqInstance.chat.completions.create.mockResolvedValue({
+      choices: [{ message: { content: '```json\n' + JSON.stringify(MOCK_SLOTS) + '\n```' } }]
+    });
+
+    const result = await service.findFreeSlots(EVENTS, 60, {}, {
+      targetPeriod: 'today',
+      now: 'Tuesday, May 26, 2026 at 8:00 AM PDT',
+      timezone: 'America/Los_Angeles'
+    });
+
+    expect(Array.isArray(result)).toBe(true);
+    expect(result.length).toBe(3);
+  });
+
+  it('returns empty array when model output is invalid JSON', async () => {
+    const service = new AIServiceClass();
+    const groqInstance = MockGroq.mock.results[MockGroq.mock.results.length - 1].value;
+    groqInstance.chat.completions.create.mockResolvedValue({
+      choices: [{ message: { content: 'Sorry, I cannot find any free slots.' } }]
+    });
+
+    const result = await service.findFreeSlots(EVENTS, 60, {}, {
+      targetPeriod: 'today',
+      now: 'Tuesday, May 26, 2026 at 8:00 AM PDT',
+      timezone: 'America/Los_Angeles'
+    });
+
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(0);
+  });
+});
+
 // ─── AIService.expandRecurrence ───────────────────────────────────────────────
 
 describe('AIService.expandRecurrence', () => {
