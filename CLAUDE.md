@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 2 complete (2026-05-22). All MVP + enhanced UX features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, and 30-day persistent sessions.
+**Status:** Phase 2 complete (2026-05-22). Phase 3B complete (2026-05-25). All MVP + enhanced UX features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, and 30-day persistent sessions. Phase 3B adds autonomous conflict resolution: suggested slots are now validated against real calendar events before being shown to the user; a second pass with `excludeRanges` fires if all first-pass suggestions are also taken (max 2 iterations, graceful fallback).
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -158,7 +158,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 ---
 
-### 3B: Autonomous conflict resolution loop
+### 3B: Autonomous conflict resolution loop ✓ Complete (2026-05-25)
 **User story:** "Move my 2pm Tuesday meeting to sometime this week" or user picks a slot that's already taken
 
 **What Nudge does — the agentic loop:**
@@ -170,10 +170,12 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 6. If ALL suggestions are conflicted (rare), runs one more round with tighter constraints, then asks the user
 7. User never sees a "suggested slot" that also has a conflict
 
-**What changes from Phase 2:**
-- `/parse` route: after `suggestSlots` returns, loop `detectConflicts` over each suggestion; filter; if 0 clean → re-call `suggestSlots` with `{ excludeRanges: conflictedSlots }` in context; max 2 iterations
-- `ConflictCard` receives only pre-validated clean slots — no UI change needed
-- `suggestSlots` system prompt updated to accept `excludeRanges` context so second-pass suggestions don't repeat conflicted times
+**What changed:**
+- `AIService.suggestSlots(intent, conflicts, options = {})` — added `options.excludeRanges`; injected into prompt so second-pass avoids already-known conflicted times
+- `/parse` route: validation loop after `suggestSlots`; runs `detectConflicts` on each suggestion; if 0 clean → second call with `{ excludeRanges }`; max 2 `suggestSlots` calls total; graceful fallback to raw suggestions if loop exhausted
+- Response now includes `loopIterations` (0–1) for debugging; frontend ignores it
+- `ConflictCard` unchanged — it just receives pre-validated clean slots now
+- 3 new TDD tests in `tests/routes/assistant.test.js`; 109 tests total, all passing
 
 **This is the core agentic behavior:** Nudge reasons through the problem autonomously and only surfaces it to the user when it's stuck, not at every step.
 
@@ -224,8 +226,8 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 ### Phase 3 implementation order
 Build in this sequence — each step is independently useful and unblocks the next:
 
-1. **3B first** (conflict loop) — zero new UI, pure backend logic change, immediately makes existing conflict flow smarter
-2. **3D second** (event editing) — unlocks the `PATCH` stub, high user value, reuses candidate search from delete
+1. ~~**3B first** (conflict loop)~~ ✓ Complete (2026-05-25)
+2. **3D next** (event editing) — unlocks the `PATCH` stub, high user value, reuses candidate search from delete
 3. **3A third** (batch scheduling) — highest demo impact, needs BatchPlanCard but logic builds on conflict loop from 3B
 4. **3C last** (find free slots) — most novel AI feature, good capstone, depends on solid event reading from prior phases
 

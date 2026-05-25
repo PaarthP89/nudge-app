@@ -75,6 +75,7 @@ async function runParse(req, res, next) {
     let conflicts = [];
     let suggestions = [];
     let candidates = [];
+    let loopIterations = 0;
 
     if (intent.action === 'create' && intent.start_time && intent.date_known && intent.time_known) {
       const { accessToken, refreshToken } = req.user;
@@ -88,7 +89,33 @@ async function runParse(req, res, next) {
 
       if (conflicts.length > 0) {
         try {
-          suggestions = await service.suggestSlots(intent, conflicts);
+          let rawSuggestions = await service.suggestSlots(intent, conflicts, {});
+          let cleanSuggestions = [];
+          let excludeRanges = [];
+
+          while (cleanSuggestions.length === 0 && loopIterations < 2) {
+            for (const suggestion of rawSuggestions) {
+              const suggestionConflicts = detectConflicts(events, {
+                action: 'create',
+                start_time: suggestion.start_time,
+                end_time: suggestion.end_time,
+                duration_minutes: intent.duration_minutes,
+              });
+              if (suggestionConflicts.length === 0) {
+                cleanSuggestions.push(suggestion);
+              } else {
+                excludeRanges.push({ start: suggestion.start_time, end: suggestion.end_time });
+              }
+            }
+            if (cleanSuggestions.length === 0 && loopIterations < 1) {
+              rawSuggestions = await service.suggestSlots(intent, conflicts, { excludeRanges });
+              loopIterations++;
+            } else {
+              break;
+            }
+          }
+
+          suggestions = cleanSuggestions.length > 0 ? cleanSuggestions : rawSuggestions;
         } catch (err) {
           console.error('[assistant] suggestSlots error:', err.message);
         }
@@ -167,7 +194,7 @@ async function runParse(req, res, next) {
       }
     }
 
-    res.json({ intent, reply, conflicts, suggestions, candidates, queryResults });
+    res.json({ intent, reply, conflicts, suggestions, candidates, queryResults, loopIterations });
   } catch (err) {
     console.error('[assistant] AI service error:', err.status, err.statusCode, err.message);
     const msg = String(err.message || '');

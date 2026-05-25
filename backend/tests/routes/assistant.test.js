@@ -646,3 +646,104 @@ describe('POST /api/assistant/confirm — authenticated', () => {
     expect(res.status).toBe(500);
   });
 });
+
+// ── 3B: autonomous conflict resolution loop ───────────────────────────────────
+
+describe('POST /api/assistant/parse — 3B conflict loop', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('returns only clean suggestions when first-pass suggestions are conflicted', async () => {
+    // CONFLICT_EVENT occupies 9:00–9:30. Two suggestions overlap it; one at 11am does not.
+    const conflictedSuggestions = [
+      { start_time: '2026-05-23T09:00:00Z', end_time: '2026-05-23T09:30:00Z', label: '9:00 AM – 9:30 AM' },
+      { start_time: '2026-05-23T09:10:00Z', end_time: '2026-05-23T09:40:00Z', label: '9:10 AM – 9:40 AM' },
+      { start_time: '2026-05-23T11:00:00Z', end_time: '2026-05-23T11:30:00Z', label: '11:00 AM – 11:30 AM' },
+    ];
+    const suggestSlotsMock = jest.fn().mockResolvedValue(conflictedSuggestions);
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: suggestSlotsMock,
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT]),
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'Schedule a standup tomorrow at 9am' });
+
+    expect(res.status).toBe(200);
+    // Only the 11am suggestion is clean; the 9:00 and 9:10 slots conflict with CONFLICT_EVENT
+    expect(res.body.suggestions).toHaveLength(1);
+    expect(res.body.suggestions[0].start_time).toBe('2026-05-23T11:00:00Z');
+    // No second pass needed — we found a clean slot on the first try
+    expect(suggestSlotsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs second pass when ALL first-pass suggestions are conflicted', async () => {
+    // All 3 first-pass suggestions overlap CONFLICT_EVENT (9:00–9:30)
+    const allConflicted = [
+      { start_time: '2026-05-23T09:00:00Z', end_time: '2026-05-23T09:30:00Z', label: '9:00 AM' },
+      { start_time: '2026-05-23T09:05:00Z', end_time: '2026-05-23T09:35:00Z', label: '9:05 AM' },
+      { start_time: '2026-05-23T09:10:00Z', end_time: '2026-05-23T09:40:00Z', label: '9:10 AM' },
+    ];
+    const cleanSecondPass = [
+      { start_time: '2026-05-23T11:00:00Z', end_time: '2026-05-23T11:30:00Z', label: '11:00 AM' },
+      { start_time: '2026-05-23T14:00:00Z', end_time: '2026-05-23T14:30:00Z', label: '2:00 PM' },
+    ];
+    const suggestSlotsMock = jest.fn()
+      .mockResolvedValueOnce(allConflicted)
+      .mockResolvedValueOnce(cleanSecondPass);
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: suggestSlotsMock,
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT]),
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'Schedule a standup tomorrow at 9am' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.suggestions).toHaveLength(2);
+    // suggestSlots must have been called twice (initial pass + one retry)
+    expect(suggestSlotsMock).toHaveBeenCalledTimes(2);
+    // Second call must include excludeRanges covering the 3 conflicted slots
+    const secondCallOptions = suggestSlotsMock.mock.calls[1][2];
+    expect(secondCallOptions).toHaveProperty('excludeRanges');
+    expect(secondCallOptions.excludeRanges).toHaveLength(3);
+  });
+
+  it('falls back to raw suggestions after 2 iterations if still no clean slots', async () => {
+    // Both passes return suggestions that conflict with CONFLICT_EVENT
+    const allConflicted = [
+      { start_time: '2026-05-23T09:00:00Z', end_time: '2026-05-23T09:30:00Z', label: '9:00 AM' },
+      { start_time: '2026-05-23T09:05:00Z', end_time: '2026-05-23T09:35:00Z', label: '9:05 AM' },
+      { start_time: '2026-05-23T09:10:00Z', end_time: '2026-05-23T09:40:00Z', label: '9:10 AM' },
+    ];
+    const suggestSlotsMock = jest.fn()
+      .mockResolvedValue(allConflicted); // both calls return same conflicted list
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: suggestSlotsMock,
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT]),
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'Schedule a standup tomorrow at 9am' });
+
+    expect(res.status).toBe(200);
+    // Loop must stop after exactly 2 suggestSlots calls (no infinite loop)
+    expect(suggestSlotsMock).toHaveBeenCalledTimes(2);
+    // Graceful fallback: response must be non-empty (raw suggestions, not an empty array)
+    expect(res.body.suggestions.length).toBeGreaterThan(0);
+  });
+});

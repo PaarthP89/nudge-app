@@ -190,7 +190,7 @@ class AIService {
     }
   }
 
-  async suggestSlots(intent, conflicts) {
+  async suggestSlots(intent, conflicts, options = {}) {
     const conflictDescriptions = conflicts.map(c => {
       const s = new Date(c.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
       const e = new Date(c.end).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
@@ -206,10 +206,15 @@ class AIService {
     const offset = offsetMatch ? offsetMatch[1] : 'Z';
 
     const systemPrompt = `You are a scheduling assistant. Return ONLY a valid JSON array of exactly 3 alternative time slot objects. No markdown, no explanation.
-Each object must have exactly these fields: { "start_time": "ISO 8601 string with timezone offset ${offset}", "end_time": "ISO 8601 string with same offset", "label": "human-readable range like '2:00 PM – 3:00 PM'" }`;
+Each object must have exactly these fields: { "start_time": "ISO 8601 string with timezone offset ${offset}", "end_time": "ISO 8601 string with same offset", "label": "human-readable range like '2:00 PM – 3:00 PM'" }
+Stay within working hours: 8am–7pm only. Prefer the same day first, then next 2 days.`;
+
+    const excludeNote = options.excludeRanges && options.excludeRanges.length > 0
+      ? `\nAlso avoid these times (already checked, also conflicted): ${options.excludeRanges.map(r => `${r.start}–${r.end}`).join(', ')}`
+      : '';
 
     const userMsg = `I want to schedule a ${duration}-minute event on ${dateStr}.
-These times are taken: ${conflictDescriptions}
+These times are taken: ${conflictDescriptions}${excludeNote}
 Suggest 3 other time slots on the same day, avoiding those conflicts.`;
 
     const completion = await this.groq.chat.completions.create({
