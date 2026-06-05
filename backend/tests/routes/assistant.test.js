@@ -389,6 +389,23 @@ describe('POST /api/assistant/parse — conflict detection', () => {
     expect(res.body.queryResults[0].id).toBe('qev-1');
   });
 
+  it('query without date_known still fetches calendar events defaulting to today', async () => {
+    const listEvents = jest.fn().mockResolvedValue([]);
+    GoogleCalendarService.mockImplementation(() => ({ listEvents }));
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'query', date_known: false, start_time: null }),
+      chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'query', date_known: false, start_time: null }),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: "What's on my calendar?" });
+    expect(res.status).toBe(200);
+    expect(listEvents).toHaveBeenCalled();
+    expect(Array.isArray(res.body.queryResults)).toBe(true);
+    expect(res.body.reply).toMatch(/calendar/i);
+  });
+
   it('skips calendar call when start_time is null', async () => {
     const listEvents = jest.fn().mockResolvedValue([]);
     GoogleCalendarService.mockImplementation(() => ({ listEvents }));
@@ -1317,6 +1334,37 @@ describe('POST /api/assistant/voice-parse — Phase 4 interceptors and fallthrou
     expect(res.body.speechReply).not.toMatch(/\*\*/);
     expect(res.body.speechReply).not.toMatch(/\n/);
     expect(res.body.audioMetadata.waitForInput).toBe(false);
+  });
+
+  it('Negation interceptor clears pending draft and does not create event', async () => {
+    const createEvent = jest.fn().mockResolvedValue({
+      id: 'ev-neg', title: 'Team standup',
+      start: '2026-05-23T09:00:00Z', end: '2026-05-23T09:30:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    });
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+
+    const agent = request.agent(app);
+
+    // Step 1: seed the session with a pending draft
+    await agent
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Schedule team standup tomorrow at 9am' });
+
+    // Step 2: cancel via negation word
+    const res = await agent
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'No' });
+
+    expect(res.status).toBe(200);
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(res.body.speechReply).toMatch(/cancel/i);
+    expect(res.body.audioMetadata.inputExpectation).toBe('open_ended');
+    expect(res.body.audioMetadata.clearToListen).toBe(true);
   });
 
   it('Standard fallthrough generates correct audio flags with zero markdown', async () => {

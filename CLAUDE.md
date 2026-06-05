@@ -1,6 +1,3 @@
-Here is the updated `CLAUDE.md` file incorporating the comprehensive Phase 4 development specifications and project structure updates.
-
-```markdown
 # Nudge: AI-Powered Calendar Assistant
 
 ## Project Overview
@@ -8,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 2 complete (2026-05-22). Phase 3A/3B/3C/3D all complete (2026-05-25). Post-Phase 3 improvements landed (2026-06-04): frontend visual redesign + event editing precision fix. All MVP + enhanced UX + agentic features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, and goal-oriented free-slot finding. Phase 3C adds `find_slot`: user says "find me a 2-hour block tomorrow" → AI reads calendar → scores free windows → SlotOptionsCard shows top 3 options with reasoning → single click schedules. 138 tests passing.
+**Status:** Phase 4 complete (2026-06-04). All phases done: MVP, enhanced UX, agentic scheduling, and hands-free voice mode. 153 tests passing. Full feature list: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, goal-oriented free-slot finding, hands-free voice mode with continuous STT/TTS loop and session interceptors.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -17,13 +14,13 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 ### Frontend
 - **React (Vite)** — calendar grid, chat UI, voice input
 - **IBM Plex Sans** — typography via Google Fonts; applied globally in `index.css`
-- **Web Speech API** — browser-native speech-to-text (STT) and text-to-speech (TTS) for hands-free loop (Phase 4)
+- **Web Speech API** — browser-native STT (`SpeechRecognition`) and TTS (`speechSynthesis`) for hands-free loop (Phase 4)
 
 ### Backend
 - **Node.js + Express** — REST API, session management, OAuth proxy
 - **express-session** — session management & server-side conversation state cache
 - **Passport.js** — Google OAuth 2.0 authentication
-- **Testing:** Jest + Supertest (138 tests passing)
+- **Testing:** Jest + Supertest (153 tests passing)
 
 ### AI & External Services
 - **Groq SDK (llama-3.3-70b-versatile)** — intent parsing, conflict resolution, rescheduling suggestions (free tier, 30 RPM). Model is configurable via `GROQ_MODEL` env var. Service abstracted as `AIService` — swap provider by editing `src/services/ai.js` only.
@@ -121,13 +118,13 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - Abort phrases (nevermind, cancel, stop, forget it, start over, etc.) handled client-side — clears draft + history without hitting the AI API
 - [x] Calendar query via chat — ✓ Complete (2026-05-22)
   - "What's on my calendar Sunday?" / "Do I have anything tomorrow?" → action: query
-  - `/parse` route fetches events for the day when action=query and date_known; returns `queryResults`
+  - `/parse` route fetches events for the day when action=query; defaults to today when AI doesn't extract a concrete date (prevents "Let me check your calendar…" with no results)
   - QueryResultCard shows each event with title and time range
   - "Nothing on your calendar for X" reply when day is empty
 
 ---
 
-## Phase 3: Agentic Scheduling (The Core Upgrade)
+## Phase 3: Agentic Scheduling (The Core Upgrade) ✓ Complete
 
 **North star:** Nudge stops being a chatbot that creates single events and becomes an agent that reasons about your calendar, executes multi-step plans, and only asks for input when it genuinely needs it. The user states a goal; Nudge figures out how to achieve it.
 
@@ -160,7 +157,6 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - `BatchPlanCard.jsx` — shows instance list with ⚠ conflict badges, "Confirm all N", "Skip X conflicted, confirm Y", Cancel
 - `useChat.js`: added `confirmBatch` (POSTs to `/confirm-batch`, fires `nudge:batch-created`, clears draft + history); handles `batchPlan` response (suppresses regular confirm card when batch)
 - `useCalendar.js`: listens for `nudge:batch-created` to refresh calendar
-- 10 new TDD tests (3 in `ai.test.js`, 7 in `assistant.test.js`); 128 tests total, all passing
 
 ---
 
@@ -181,7 +177,6 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - `/parse` route: validation loop after `suggestSlots`; runs `detectConflicts` on each suggestion; if 0 clean → second call with `{ excludeRanges }`; max 2 `suggestSlots` calls total; graceful fallback to raw suggestions if loop exhausted
 - Response now includes `loopIterations` (0–1) for debugging; frontend ignores it
 - `ConflictCard` unchanged — it just receives pre-validated clean slots now
-- 3 new TDD tests in `tests/routes/assistant.test.js`; 109 tests total, all passing
 
 **This is the core agentic behavior:** Nudge reasons through the problem autonomously and only surfaces it to the user when it's stuck, not at every step.
 
@@ -207,7 +202,6 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - `/parse` route: `find_slot` handler — `parseFindSlotRange(intent, ctx)` converts `target_period`/`date_known` to a day range; fetches events; calls `findFreeSlots`; validates all returned slots against real calendar (filters AI-hallucinated overlaps); returns `slotOptions: { slots, title, duration, attendees }`; keyword safety net for "find me / free time / open slot / when am I free"
 - `SlotOptionsCard.jsx` — shows title + attendees header, up to 3 slot buttons each with date+time and reasoning label; selecting a slot fires `POST /api/assistant/confirm` directly (no second confirm step); handles idle/loading/done/error/cancelled states
 - `useChat.js`: `confirmSlot(slot, slotOptions)` builds create intent from slot + metadata, calls `confirmEvent`, clears draft + history; handles `slotOptions` response → `slotOptions` message type
-- 9 new TDD tests (3 in `ai.test.js`, 4 in `assistant.test.js`, 2 in `calendar.test.js`); 137 tests total, all passing
 
 ---
 
@@ -231,7 +225,6 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - `EditConfirmCard.jsx` — before/after diff with strikethrough, conflict warning, fires `nudge:event-updated`
 - `useChat.js`: `confirmUpdate` callback (PATCH + `nudge:event-updated`), handles `updateProposal` → `editConfirm` message
 - `useCalendar.js`: listens for `nudge:event-updated` to refresh calendar
-- 8 new tests; 117 total, all passing
 
 **Precision fix (2026-06-04) — same-name events on different dates:**
 - **Bug:** "move my workout on June 6th to June 8th" was finding both a June 5th and June 6th workout (title-only search searched 7 days) and then patching the wrong date because `computeUpdatePatches` used `intent.start_time` (which was the source date) instead of `intent.new_date`.
@@ -244,17 +237,6 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - `updateDisambig` message type — emitted by `useChat.js` when `candidates.length > 0 && !updateProposal`
 - `selectUpdateCandidate` in `useChat.js` — posts `{ forcedIntent, candidateId }` to `/parse`; handles `updateProposal` response
 - Delete candidate time display fixed: now shows full date+time (not just time) so same-name events on different days are distinguishable
-- 1 new regression test ("moves the june-6th workout to june 8th — not the june-5th one"); 138 tests total
-
----
-
-### Phase 3 implementation order
-Build in this sequence — each step is independently useful and unblocks the next:
-
-1. ~~**3B first** (conflict loop)~~ ✓ Complete (2026-05-25)
-2. ~~**3D next** (event editing)~~ ✓ Complete (2026-05-25)
-3. ~~**3A third** (batch scheduling)~~ ✓ Complete (2026-05-25)
-4. ~~**3C last** (find free slots)~~ ✓ Complete (2026-05-25)
 
 ---
 
@@ -296,10 +278,8 @@ Keep base system prompts under 400 tokens. Everything specific to the current re
 **Pattern:**
 
 ```
-
 system: [lean role + output schema + 2-3 few-shot examples]
 user: [CONTEXT: dynamic state] [REQUEST: user's actual message]
-
 ```
 
 ### Principle 2: Few-shot examples are non-negotiable
@@ -313,44 +293,33 @@ Good prompt: "Extract the action. Examples: 'delete my 2pm' → action: delete. 
 
 When the AI suggests alternatives, the backend must validate them against real calendar data BEFORE sending to the frontend. The user never sees a "suggested slot" that is also conflicted. This is the core of 3B and applies to 3C as well.
 
-
-```
-
+```javascript
 // WRONG — dumb implementation
 const suggestions = await ai.suggestSlots(intent, conflicts);
 return { suggestions }; // might contain conflicted slots
 
 // RIGHT — agentic implementation
-
 const suggestions = await ai.suggestSlots(intent, conflicts);
-const cleanSuggestions = suggestions.filter(s =>
-detectConflicts(events, s).length === 0
-);
+const cleanSuggestions = suggestions.filter(s => detectConflicts(events, s).length === 0);
 if (cleanSuggestions.length === 0) {
-// Second pass with excludeRanges — max 2 iterations
-const excludeRanges = suggestions.map(s => ({ start: s.start_time, end: s.end_time }));
-const retry = await ai.suggestSlots(intent, conflicts, { excludeRanges });
-return { suggestions: retry };
+  const excludeRanges = suggestions.map(s => ({ start: s.start_time, end: s.end_time }));
+  const retry = await ai.suggestSlots(intent, conflicts, { excludeRanges });
+  return { suggestions: retry };
 }
 return { suggestions: cleanSuggestions };
-
 ```
 
 ### Principle 4: Plan-then-Execute for batch operations (3A)
 
 For recurring/batch events: the AI plans ALL instances first, the backend validates ALL of them, then a single confirmation executes ALL of them. Never confirm one event at a time in a loop.
 
-
-```
-
-// 3A flow
-const instances = await ai.expandRecurrence(intent);       // plan
-const validated = instances.map(inst => ({                  // validate all
-...inst,
-conflicts: detectConflicts(events, inst)
+```javascript
+const instances = await ai.expandRecurrence(intent);
+const validated = instances.map(inst => ({
+  ...inst,
+  conflicts: detectConflicts(events, inst)
 }));
-return { batchPlan: validated };                            // single confirm → execute all
-
+return { batchPlan: validated }; // single confirm → execute all
 ```
 
 ### Principle 5: Fuzzy candidate matching, not exact ID lookup
@@ -361,119 +330,7 @@ For delete and update actions, the user will never say an event ID. They say "my
 3. Filter by title similarity if AI extracted a title
 4. Return up to 3 candidates for user disambiguation if ambiguous
 
-This logic already exists for delete — 3D (update) must reuse it exactly, not reimplement it.
-
----
-
-### Prompt templates for each Phase 3 AI method
-
-#### `AIService.suggestSlots(intent, conflicts, options = {})`
-
-
-```
-
-system:
-You are a scheduling assistant. Given a scheduling conflict, suggest 3 alternative time slots.
-Return ONLY a JSON array of slot objects: [{"start_time": "ISO8601", "end_time": "ISO8601", "label": "brief human label"}]
-Rules: Stay within working hours (8am–7pm). Prefer the same day first, then next 2 days.
-{{#if excludeRanges}}Avoid these times: {{excludeRanges}}{{/if}}
-Examples:
-
-* Conflict at 2pm Tuesday → suggest: 3pm Tue, 10am Wed, 2pm Wed
-* Conflict at 9am → suggest: 10am same day, 9am next day, 11am same day
-
-user:
-[INTENT: title="{{title}}" requested={{start}}–{{end}} duration={{duration}}min]
-[CONFLICTS: {{conflictSummary}}]
-[DATE: today is {{localDatetime}}, timezone {{timezone}}]
-Suggest 3 clean alternative slots.
-
-```
-
-#### `AIService.expandRecurrence(intent)`
-
-
-```
-
-system:
-You are a scheduling assistant. Expand a recurring event description into individual event instances.
-Return ONLY a JSON array: [{"title": "...", "start_time": "ISO8601", "end_time": "ISO8601"}]
-Generate every instance explicitly — no recurrence rules, just the flat list of datetimes.
-Examples:
-
-* "workout every weekday next week at 6am for 1 hour" → 5 objects (Mon–Fri)
-* "standup Mon/Wed/Fri for 2 weeks at 9am 30min" → 6 objects
-
-user:
-[REQUEST: "{{userMessage}}"]
-[PARSED: title="{{title}}" recurrence={{recurrenceObject}} duration={{duration}}min]
-[DATE: today is {{localDatetime}}, timezone {{timezone}}]
-Expand into individual instances.
-
-```
-
-#### `AIService.findFreeSlots(events, duration, preferences)`
-
-
-```
-
-system:
-You are a scheduling assistant. Given a user's calendar events and a requested duration, find the 3 best free time windows.
-Return ONLY a JSON array: [{"start_time": "ISO8601", "end_time": "ISO8601", "score": 0–100, "label": "brief reason"}]
-Scoring rules (higher = better):
-
-* Mid-morning slots (9am–11am): +30
-* Early afternoon (1pm–3pm): +20
-* Avoids back-to-back (30+ min buffer before next event): +25
-* Within working hours (8am–7pm): required
-* Avoids early morning (<8am) or late evening (>7pm): -50
-
-user:
-[EVENTS: {{JSON.stringify(eventsForPeriod)}}]
-[REQUEST: find {{duration}} min block in {{targetPeriod}}]
-[DATE: today is {{localDatetime}}, timezone {{timezone}}]
-Return top 3 scored free slots with labels.
-
-```
-
-#### Update intent parsing for 3D (add to existing `parseIntent` system prompt)
-
-Add these examples to the existing few-shot section:
-
-```
-
-"move my dentist to next Thursday at the same time" → action: update, title: "dentist", new_date: "next Thursday", preserve_time: true
-"make my 3pm meeting an hour longer" → action: update, time_hint: "3pm", duration_delta: +60
-"rename my standup to team sync" → action: update, title_hint: "standup", new_title: "team sync"
-"move Tuesday standup to Thursday same time" → action: update, title_hint: "standup", day_hint: "Tuesday", new_date: "Thursday", preserve_time: true
-
-```
-
----
-
-### Testing philosophy for Phase 3 AI features
-
-AI methods cannot be tested with exact output assertions — the model is non-deterministic. Test the STRUCTURE and CONSTRAINTS instead:
-
-```javascript
-// WRONG
-expect(result.suggestions[0].start_time).toBe('2026-05-27T09:00:00');
-
-// RIGHT
-expect(result.suggestions).toHaveLength(3);
-expect(result.suggestions.every(s => s.start_time && s.end_time)).toBe(true);
-expect(result.suggestions.every(s => {
-  const hour = new Date(s.start_time).getHours();
-  return hour >= 8 && hour <= 19; // within working hours
-})).toBe(true);
-
-```
-
-For the conflict loop (3B), mock `suggestSlots` to return known conflicted times and assert the backend filters them before responding.
-
-For batch scheduling (3A), mock `expandRecurrence` with a fixed 5-instance array and assert all 5 are conflict-checked before the batch plan is returned.
-
----
+This logic already exists for delete — 3D (update) reuses it exactly.
 
 ---
 
@@ -482,157 +339,219 @@ For batch scheduling (3A), mock `expandRecurrence` with a fixed 5-instance array
 Full visual redesign of the app shell, calendar, chat panel, and login page.
 
 **App shell (`HomePage.jsx` + `App.css`):**
-
-* New top nav bar: Nudge logo mark, "Calendar" tab, "New Event" button (focuses chat input), bell + account icon buttons
-* Layout uses `.app-shell` / `.app-body` / `.app-sidebar` / `.app-main` CSS classes from `App.css` instead of inline styles
-* Global reset + IBM Plex Sans font applied via new `index.css` (imported in `main.jsx`)
+- New top nav bar: Nudge logo mark, "Calendar" tab, "New Event" button (focuses chat input), bell + account icon buttons, mic button to launch voice mode
+- Layout uses `.app-shell` / `.app-body` / `.app-sidebar` / `.app-main` CSS classes from `App.css` instead of inline styles
+- Global reset + IBM Plex Sans font applied via new `index.css` (imported in `main.jsx`)
 
 **Calendar (`CalendarView.jsx` + `CalendarView.css`):**
-
-* Color palette shifted to IBM Carbon Blue (#0f62fe) + neutral grays (#313333, #7a7b7b, #efeded)
-* Toolbar reordered: period label now appears first (left), then nav controls, then view toggle
-* Floating action button (FAB) added bottom-right; clicking it focuses the chat input
-* Event chips, today circle, week-view events all updated to new palette
+- Color palette shifted to IBM Carbon Blue (#0f62fe) + neutral grays (#313333, #7a7b7b, #efeded)
+- Toolbar reordered: period label now appears first (left), then nav controls, then view toggle
+- Floating action button (FAB) added bottom-right; clicking it focuses the chat input
+- Event chips, today circle, week-view events all updated to new palette
 
 **Chat panel (`ChatPanel.jsx` + `ChatPanel.css`):**
-
-* New header: avatar circle + "Nudge AI" title + green "ACTIVE PARTNER" status dot
-* Quick chips row added above input: "Schedule meeting", "Today's Brief", "Reschedule…" — clicking fills the input textarea
-* Input styling: square corners, focus shows 2px blue border
-* All color tokens updated to match app palette
+- New header: avatar circle + "Nudge AI" title + green "ACTIVE PARTNER" status dot
+- Quick chips row added above input: "Schedule meeting", "Today's Brief", "Reschedule…" — clicking fills the input textarea
+- Input styling: square corners, focus shows 2px blue border
+- All color tokens updated to match app palette
 
 **Login page (`LoginPage.jsx`):**
-
-* Redesigned as a centered card: Nudge logo mark, tagline, full-width "Sign in with Google" button
+- Redesigned as a centered card: Nudge logo mark, tagline, full-width "Sign in with Google" button
 
 ---
 
-## Phase 4: Voice Mode & Hands-Free Conversational Pipeline
+## Phase 4: Voice Mode & Hands-Free Conversational Pipeline ✓ Complete
 
-* [ ] 4A: Implement Speech Cleanup Service (`speechUtils.js`) for markdown/structural scrubbing
-* [ ] 4B: Build session interceptors for audio-first binary confirmations ("Yes") and multi-option selection ("Option two")
-* [ ] 4C: Implement `POST /api/assistant/voice-parse` pipeline with structural layout-to-vocal conversion
-* [ ] 4D: Connect UI orchestrator listening hook with automatic Web Speech STT/TTS roundtrips
+- [x] 4A: Speech Cleanup Service (`speechUtils.js`) — ✓ Complete (2026-06-04)
+- [x] 4B: Session interceptors for binary confirmations and multi-option selection — ✓ Complete (2026-06-04)
+- [x] 4C: `POST /api/assistant/voice-parse` pipeline with vocal conversion — ✓ Complete (2026-06-04)
+- [x] 4D: `VoiceMode.jsx` UI with continuous STT/TTS loop — ✓ Complete (2026-06-04)
 
 ### Architectural Goal
 
-Enable a 100% hands-free "driving mode" experience using free client-side STT (Speech-to-Text) and TTS (Text-to-Speech) brokered by an enhanced backend audio orchestration lifecycle. The user must be able to complete complex loops (Create -> Detect Conflict -> Pick Suggestion -> Confirm) or (Query -> Update -> Verify) purely through natural speech turns without touching or looking at the device.
+Enable a 100% hands-free "driving mode" experience using free client-side STT (Speech-to-Text) and TTS (Text-to-Speech) brokered by an enhanced backend audio orchestration lifecycle. The user must be able to complete complex loops (Create → Detect Conflict → Pick Suggestion → Confirm) or (Query → Update → Verify) purely through natural speech turns without touching or looking at the device.
 
 ### Voice Response Optimization Philosophy
 
 The existing `/api/assistant/parse` endpoint is optimized for screen layouts (it returns markdown text, cards, and UI schema states). For Voice Mode, the backend provides a parallel audio-first processing pipeline:
 
-1. **Zero Markdown:** Exclude all bold (``), bullet points, emojis, and inline markdown symbols before generating the vocal string so synthesis engines do not read formatting code aloud.
-2. **Implicit Disambiguation:** Translate structural database lists (like a list of 3 free slot options or 3 query candidates) into clean, verbalized choices: *"I found three openings tomorrow: Option one is at 9 AM, option two is at 1 PM, and option three is at 4 PM. Which one works?"*
-3. **Audio State Flagging:** Every voice-optimized response must return explicit conversational flags (`waitForInput`, `inputExpectation`, `clearToListen`) so the client knows exactly when to play audio cue tones and safely toggle the microphone back on.
-
-### Backend Integration Strategy
-
-#### 1. The Speech Cleanup Service (`src/services/speechUtils.js`)
-
-A pure utility service designed to normalize data payloads for device text-to-speech engines:
-
-* Regex parsing to strip markdown syntax cleanly.
-* Date/Time normalization (e.g., parsing ISO strings embedded in textual responses and formatting them to conversational language like "Friday, June 5th at 5:00 PM").
-* Textual array flattener: Conforming `queryResults`, `slotOptions`, or deletion `candidates` arrays into string sequences.
-
-#### 2. Enhanced Audio-First Conversational Loops
-
-* **The Binary Confirmation Interceptor:**
-When a user has an active, valid draft intent sitting in their server-side `express-session`, and the incoming `message` text matches an affirmation checklist (e.g., "Yes", "Yep", "Go ahead", "Confirm", "Do it"), the endpoint skips Groq LLM parsing entirely. It routes directly to the `/confirm`, `/confirm-batch`, or `/api/calendar/events/:id` PATCH handlers internally, executes the write operation, and returns a verbal success string.
-* **Fuzzy Sequential Triggers (The Option Picker):**
-If the session state reveals that the user was just presented with alternative conflict slots or query candidates, the backend monitors the incoming voice message for index phrase triggers ("The first one", "Option two", "The 4 PM one"). It maps the selection to the cached session array data, commits the mutation, and passes back the final status speech-payload.
+1. **Zero Markdown:** Exclude all bold, bullet points, emojis, and inline markdown symbols before generating the vocal string so synthesis engines do not read formatting code aloud.
+2. **Implicit Disambiguation:** Translate structural lists (free slot options, query results, candidates) into clean verbalized choices: "I found three openings tomorrow: Option one is at 9 AM, option two is at 1 PM, and option three is at 4 PM. Which one works?"
+3. **Audio State Flagging:** Every voice response returns explicit conversational flags (`waitForInput`, `inputExpectation`, `clearToListen`) so the client knows exactly when to play audio cue tones and re-open the microphone.
 
 ---
 
-### Phase 4 New and Updated API Specs
+### 4A: Speech Cleanup Service ✓ Complete (2026-06-04)
+
+`src/services/speechUtils.js` — pure utility, zero `require()` statements.
+
+**Exports:**
+- `stripMarkdown(text)` — strips `**bold**`, `*italic*`, bullet prefixes, blockquotes, inline code, collapses newlines to ", "
+- `normalizeVocalDate(isoString, timezone)` — uses `Intl.DateTimeFormat.formatToParts()` for timezone-aware output like "Friday, June 5th at 5:00 PM"
+- `flattenOptionsToSpeech(optionsArray, type)` — type is `'slots'` or `'events'`; produces "I found three openings. Option one is at 9 AM. Option two is at 1 PM. And option three is at 4 PM. Which one works?"
+
+**Implementation notes:**
+- `getOrdinal(n)` handles 11th/12th/13th edge cases correctly
+- `extractTime(isoString)` extracts hour/minute from ISO string, formats as "9 AM" or "2:30 PM"
+- Tests use UTC timezone so 17:00 UTC = 5:00 PM exactly (avoiding EDT offset ambiguity)
+- 9 tests in `tests/services/speechUtils.test.js`
+
+---
+
+### 4B+4C: `POST /api/assistant/voice-parse` ✓ Complete (2026-06-04)
+
+Dedicated audio wrapper route. Shares `computeParseResult(req)` with `/parse` — all core logic lives in one place.
+
+**Request/response:**
+```json
+// Request
+{ "message": "...", "history": [...], "timezone": "America/New_York", "localDatetime": "..." }
+
+// Response
+{
+  "speechReply": "Got it — I'll schedule workout. Should I go ahead?",
+  "rawIntent": { ... },
+  "audioMetadata": { "waitForInput": true, "inputExpectation": "binary_affirmation", "clearToListen": true }
+}
+```
+
+**Interceptor chain (runs before Groq):**
+
+1. **Binary affirmation interceptor** (`AFFIRMATION_RE`) — when `req.session.voiceDraftIntent` is set and user says "yes / yep / sure / go ahead / confirm / do it / etc.", skips Groq entirely, calls `createEvent`, clears session state, returns `waitForInput: false, inputExpectation: 'none'`
+
+2. **Negation interceptor** (`NEGATION_RE`) — when `req.session.voiceDraftIntent` or `req.session.voiceActiveOptions` is set and user says "no / nope / cancel / forget it / never mind / scratch that / abort", clears all session state, returns "Okay, I've cancelled that. What else can I help you with?" with `open_ended` metadata
+
+3. **Option picker interceptor** (`parseOptionIndex`) — when `req.session.voiceActiveOptions` is set and user says "option one/two/three / the first one / 2 / etc.", resolves to the cached slot or suggestion at that index, creates the event, clears session state
+
+4. **Normal fallthrough** — calls `computeParseResult(req)`, stores resulting intent/options in session for next interceptor pass, builds vocal response via `buildSpeechReply` and `buildAudioMetadata`
+
+**Session state stored:**
+- `req.session.voiceDraftIntent` — complete create intent ready to confirm; set when action=create + date_known + time_known + title + confidence >= 0.5 + no conflicts + no batchPlan
+- `req.session.voiceActiveOptions` — `{ type: 'slots'|'suggestions', items: [...] }` — set when slotOptions or suggestions returned
+- `req.session.voiceSlotContext` — `{ title, duration, attendees }` — stored alongside slot options so option picker can build the create intent
+
+**`buildAudioMetadata` logic:**
+- slotOptions/suggestions/multiple candidates → `option_selection`
+- single candidate / batchPlan / updateProposal / ready create intent with no conflicts → `binary_affirmation`
+- everything else → `open_ended`
+
+**`buildSpeechReply` priority:**
+- slotOptions → `flattenOptionsToSpeech(slots, 'slots')`
+- queryResults → `flattenOptionsToSpeech(queryResults, 'events')`
+- multiple candidates → `flattenOptionsToSpeech(candidates, 'events')`
+- suggestions → `flattenOptionsToSpeech(suggestions, 'slots')`
+- fallback → `stripMarkdown(reply)`
+
+**Tests:** 4 tests in the Phase 4 describe block of `assistant.test.js` — binary interceptor, option picker, negation interceptor, standard fallthrough. All use `request.agent(app)` for cookie-persistent multi-step flows.
+
+---
+
+### 4D: `VoiceMode.jsx` ✓ Complete (2026-06-04)
+
+Full-screen dark overlay driving dashboard at `src/components/Voice/VoiceMode.jsx`.
+
+**UI:**
+- Status ring (200px circle) with state-driven animations: IBM Carbon Blue pulse (listening), amber spinning arc on `::before` (thinking), green pulse (speaking), gray (idle/done), red (error)
+- Live transcript display (italic, 20px) updates in real time during speech
+- Last reply card (dark background, left blue border) persists until next reply
+- Stop FAB (red circle, bottom-right) visible during active states
+- Start/Retry/Start Again button when idle
+
+**Loop architecture:**
+
+```
+startLoop()
+  → startListening()                   # continuous SpeechRecognition, 1.5s silence timer
+  → [user speaks, 1.5s silence fires]
+  → recognition.stop() → onend fires
+  → sendToBackend(accumulatedFinal)     # POST /api/assistant/voice-parse with history
+  → speakAndContinue(speechReply)       # SpeechSynthesisUtterance + fallback timer
+  → afterSpeak()                        # playPing() → startListening() again
+```
+
+**Key implementation details:**
+
+- `recognition.continuous = true` — Chrome stays open across natural speech pauses instead of stopping on 0.5s silence
+- **1.5s silence timer** — resets on every `onresult` event; fires `recognition.stop()` after 1.5s of quiet; `onend` then submits `accumulatedFinal`
+- **15s max listen cap** — `maxListenTimer` force-stops after 15s to prevent infinite mic hold
+- `accumulatedFinal` — accumulates all `isFinal` segments across the continuous session so mid-sentence pauses don't truncate the message
+- **TTS fallback timer** — `setTimeout(afterSpeak, Math.max(2500, text.length * 65))` guards against Chrome's intermittent `utter.onend` failure; `afterSpeakCalled` boolean ensures only the first of (onend, onerror, fallback) takes effect
+- **`voiceHistoryRef`** — `useRef([])` accumulates `{role, content}` pairs (capped at 20 entries = 10 turns), sent with every request so AI has multi-turn context; cleared on `stopLoop()`
+- **Web Audio ping** — 880Hz oscillator, 150ms, plays immediately before `startListening()` to signal mic re-opening
+- `loopActiveRef` — master kill switch checked at every async boundary; `stopLoop()` sets it false and clears history
+- All three loop functions (`startListening`, `sendToBackend`, `speakAndContinue`) use `function` declarations (JS hoisting) to safely cross-reference each other without `useCallback` circular deps
+
+---
+
+### Phase 4 bug fixes (2026-06-04)
+
+**Multi-turn context loss** — `sendToBackend` was not sending `history`. Fixed: `voiceHistoryRef` accumulates turns and sends with every request. History cleared on `stopLoop()`.
+
+**Premature STT stop** — `continuous: false` stopped on ~0.5s silence. Fixed: switched to `continuous: true` with 1.5s silence timer pattern described above.
+
+**TTS `onend` not firing** — Chrome intermittently skips `SpeechSynthesisUtterance.onend`. Fixed: fallback timer + `afterSpeakCalled` guard.
+
+**No cancellation handling** — user had no way to say "no" to reject a pending confirmation. Fixed: `NEGATION_RE` interceptor in `voice-parse` clears session state and returns a cancellation reply with `open_ended` metadata so the loop continues.
+
+**Query returning no results** — when AI sets `date_known: false` for "what's on my calendar today?" (non-deterministic), the old route guard `intent.date_known && intent.start_time` skipped the calendar fetch entirely, returning "Let me check your calendar…" with no results. Fixed: removed guard, always fetch, default to today when no date extracted.
+
+---
+
+### Phase 4 API
 
 #### `POST /api/assistant/voice-parse`
 
-Dedicated audio wrapper route executing over the standard parsing orchestrator.
-
-* **Headers:** Standard session cookie required.
-* **Payload:**
-
-```json
-{
-  "message": "Add an event tomorrow from 5 to 6pm called workout",
-  "history": [ ... ],
-  "timezone": "America/New_York",
-  "localDatetime": "2026-06-04T21:07:02.000Z"
-}
-
-```
-
-* **Backend Routing Flow Execution Logic:**
-
+**Backend routing flow:**
 ```
 [Incoming Voice Request]
    │
-   ├──> 1. Check Session State Cache
-   │      ├──> Active Draft + Message is "Yes/Confirm" ──> Exec Write ──> Clean Vocal String
-   │      └──> Active Options + Message is "Option X" ──> Resolve Selection ──> Clean Vocal String
-   │
-   ├──> 2. Normal /parse Route Logic Fallthrough (Groq Parsing / Core Actions)
-   │
-   └──> 3. Audio Post-Processing Pipeline
-          ├──> Read output structures (intent, conflicts, queryResults)
-          ├──> Map structural elements to conversational descriptions
-          ├──> Run speechUtils.js (Strip Markdown, inject commas/pauses)
-          └──> Return Voice JSON Response
-
+   ├──> 1. Binary affirmation interceptor (AFFIRMATION_RE + voiceDraftIntent)
+   ├──> 2. Negation interceptor (NEGATION_RE + any pending session state)
+   ├──> 3. Option picker interceptor (parseOptionIndex + voiceActiveOptions)
+   ├──> 4. Normal fallthrough via computeParseResult(req)
+   ├──> 5. Store session state (voiceDraftIntent, voiceActiveOptions, voiceSlotContext)
+   └──> 6. Build vocal response (buildSpeechReply + buildAudioMetadata)
 ```
 
-* **Response Payload Structure:**
-
+**Response:**
 ```json
 {
-  "speechReply": "Okay, an event tomorrow called workout at 5 PM that lasts 1 hour. Should I go ahead and confirm?",
+  "speechReply": "Okay, an event tomorrow called workout at 5 PM. Should I go ahead?",
   "rawIntent": { ... },
   "audioMetadata": {
     "waitForInput": true,
-    "inputExpectation": "binary_affirmation", 
+    "inputExpectation": "binary_affirmation",
     "clearToListen": true
   }
 }
-
 ```
 
----
-
-### Testing Parameters for Phase 4 Voice Features
-
-* **State Fallthrough Isolation Tests:** Mock sessions containing an unconfirmed draft and pass exact vocal variants of "Yes" to confirm the backend commits the record successfully without re-hitting Groq.
-* **Markdown Sanitization Tests:** Unit test assertions guaranteeing that bulleted strings or bracketed layout codes are completely scrubbed into flat verbal text.
-* **Option Disambiguation Verification:** Seed 3 mock calendar conflicts, trigger the voice-parse flow, and assert that the generated `speechReply` explicitly numbers the options aloud for the driver.
+`inputExpectation` values: `"binary_affirmation"` | `"option_selection"` | `"open_ended"` | `"none"`
 
 ---
 
 ## API Endpoints (Express)
 
 ### Authentication
-
-* `GET /api/auth/google` — Initiate OAuth flow
-* `GET /api/auth/google/callback` — OAuth redirect handler
-* `GET /api/auth/me` — Get current user profile
-* `POST /api/auth/logout` — Destroy session
+- `GET /api/auth/google` — Initiate OAuth flow
+- `GET /api/auth/google/callback` — OAuth redirect handler
+- `GET /api/auth/me` — Get current user profile
+- `POST /api/auth/logout` — Destroy session
 
 ### Calendar (all require session auth)
-
-* `GET /api/calendar/events` — Fetch events for date range
-* `POST /api/calendar/events` — Create event (stub 501)
-* `PATCH /api/calendar/events/:id` — Update event (Phase 3D)
-* `DELETE /api/calendar/events/:id` — Delete event
-* `GET /api/calendar/freebusy` — Fetch events for a date range; accepts `start`/`end` ISO params, returns `{ events, start, end }` (Phase 3C)
+- `GET /api/calendar/events` — Fetch events for date range
+- `POST /api/calendar/events` — Create event (stub 501)
+- `PATCH /api/calendar/events/:id` — Update event (Phase 3D)
+- `DELETE /api/calendar/events/:id` — Delete event
+- `GET /api/calendar/freebusy` — Fetch events for a date range; accepts `start`/`end` ISO params, returns `{ events, start, end }` (Phase 3C)
 
 ### AI Assistant (all require session auth)
-
-* `POST /api/assistant/parse` — Parse NL input → `{ intent, reply, conflicts, suggestions, candidates, queryResults, updateProposal, batchPlan, slotOptions, loopIterations }`
-* `POST /api/assistant/voice-parse` — Tailored audio/speech wrapper for hands-free voice operations (Phase 4)
-* `POST /api/assistant/confirm` — Execute confirmed create intent; sends email invites; returns `{ event, invitesSent, inviteErrors }`
-* `POST /api/assistant/confirm-batch` — Execute batch create (Phase 3A); returns `{ results, summary }`
-* `POST /api/assistant/chat` — Alias for /parse (same handler, accepts history)
-* `POST /api/assistant/suggest` — stub 501 (not used; 3C's find_slot goes through /parse)
+- `POST /api/assistant/parse` — Parse NL input → `{ intent, reply, conflicts, suggestions, candidates, queryResults, updateProposal, batchPlan, slotOptions, loopIterations }`
+- `POST /api/assistant/voice-parse` — Audio-first voice pipeline; returns `{ speechReply, rawIntent, audioMetadata }` (Phase 4)
+- `POST /api/assistant/confirm` — Execute confirmed create intent; sends email invites; returns `{ event, invitesSent, inviteErrors }`
+- `POST /api/assistant/confirm-batch` — Execute batch create (Phase 3A); returns `{ results, summary }`
+- `POST /api/assistant/chat` — Alias for /parse (same handler, accepts history)
+- `POST /api/assistant/suggest` — stub 501 (not used; 3C's find_slot goes through /parse)
 
 ---
 
@@ -649,10 +568,10 @@ nudge-app/
 │   │   ├── middleware/
 │   │   │   └── requireAuth.js
 │   │   ├── services/
-│   │   │   ├── ai.js           ← provider-agnostic AI service (Groq today, swappable)
+│   │   │   ├── ai.js               ← provider-agnostic AI service (Groq today, swappable)
 │   │   │   ├── googleCalendar.js
 │   │   │   ├── gmail.js
-│   │   │   └── speechUtils.js  ← Voice text-to-speech string normalizer (Phase 4)
+│   │   │   └── speechUtils.js      ← Voice TTS string normalizer (Phase 4A)
 │   │   └── app.js
 │   ├── tests/
 │   │   ├── routes/
@@ -661,6 +580,7 @@ nudge-app/
 │   │   │   └── auth.test.js
 │   │   ├── services/
 │   │   │   ├── ai.test.js
+│   │   │   ├── speechUtils.test.js
 │   │   │   └── googleCalendar.test.js
 │   │   └── setup.js
 │   ├── package.json
@@ -678,51 +598,54 @@ nudge-app/
 │   │   │   │   ├── EditConfirmCard.jsx
 │   │   │   │   └── SlotOptionsCard.jsx
 │   │   │   └── Voice/
-│   │   │       ├── VoiceMode.jsx      ← Hands-free driving dashboard view (Phase 4)
+│   │   │       ├── VoiceMode.jsx       ← Hands-free driving dashboard (Phase 4D)
 │   │   │       └── VoiceMode.css
 │   │   ├── pages/
 │   │   ├── hooks/
 │   │   │   ├── useCalendar.js
 │   │   │   └── useChat.js
 │   │   ├── App.jsx
-│   │   ├── App.css         ← app shell layout (nav, sidebar, main)
-│   │   └── index.css       ← global reset + IBM Plex Sans font
-│   ├── index.html          ← IBM Plex Sans Google Fonts link
+│   │   ├── App.css                 ← app shell layout (nav, sidebar, main)
+│   │   └── index.css               ← global reset + IBM Plex Sans font
+│   ├── index.html                  ← IBM Plex Sans Google Fonts link
 │   ├── package.json
 │   └── vite.config.js
 ├── docs/
 │   └── nudge-prd.docx
 └── CLAUDE.md
-
 ```
 
 ---
 
 ## Ground Rules
 
-* **Never push to GitHub.** User handles all pushes.
-* **TDD for backend.** Write tests before implementation for routes and services.
-* **Proxy all external APIs through Express.** No tokens exposed to frontend.
-* **Session-based auth.** OAuth tokens stored server-side, never sent to client.
+- **Never push to GitHub.** User handles all pushes.
+- **TDD for backend.** Write tests before implementation for routes and services.
+- **Proxy all external APIs through Express.** No tokens exposed to frontend.
+- **Session-based auth.** OAuth tokens stored server-side, never sent to client.
 
 ## Non-Goals (v1.0)
 
-* Multi-user / team calendars
-* Mobile-native iOS/Android (web-responsive is sufficient)
-* Third-party integrations beyond Google Calendar and Gmail
-* Recurring event management via Google's native recurrence rules (Nudge manages its own instances)
-* Production billing or infrastructure
+- Multi-user / team calendars
+- Mobile-native iOS/Android (web-responsive is sufficient)
+- Third-party integrations beyond Google Calendar and Gmail
+- Recurring event management via Google's native recurrence rules (Nudge manages its own instances)
+- Production billing or infrastructure
 
 ## Notes for Implementation
 
-* AI service is abstracted in `src/services/ai.js` — to swap providers, only that file needs changes
-* Currently using `llama-3.3-70b-versatile` via Groq; configurable via `GROQ_MODEL` env var
-* Session storage is in-memory for dev; upgrade to Redis if needed for production
-* Voice input (Phase 4) is free via Web Speech API but browser-limited; text input is primary
-* Phase 3 agentic loop max iterations: 2 (conflict resolution), to avoid infinite loops and excessive API calls
-* `find_slot` (3C) is handled by the existing `/parse` endpoint, not `/suggest`; `/suggest` remains a 501 stub
-* `parseFindSlotRange` in `assistant.js` uses a NaN guard when parsing `now` — the client sends a human-readable locale string ("Friday, May 26, 2026 at 8:09 PM PDT") that `new Date()` cannot reliably parse in Node.js; falls back to server time
-* **Hook ordering gotcha in `useChat.js`:** `confirmSlot` must be declared AFTER `confirmEvent` because it closes over it. `const` is not hoisted — placing `confirmSlot` before `confirmEvent` causes a temporal dead zone crash that breaks the entire chat panel on load
-* **`parseDayHint` in `assistant.js`:** converts human-readable day strings ("June 6th", "Monday", ISO dates) to a `Date`; strips ordinal suffixes (`6th` → `6`); handles named weekdays by finding the most recent past occurrence. Used to narrow update candidate search to a single day when `day_hint` is present alongside a title filter.
-* **`forcedIntent` / `candidateId` fast paths in `/parse`:** when the frontend already knows which intent and which event to update (after user disambiguation via `UpdateCandidateCard`), it sends `{ forcedIntent, candidateId }` — the backend skips AI parsing and event search entirely, fetching the event by ID via `getEvent()` and computing patches immediately.
-
+- AI service is abstracted in `src/services/ai.js` — to swap providers, only that file needs changes
+- Currently using `llama-3.3-70b-versatile` via Groq; configurable via `GROQ_MODEL` env var
+- Session storage is in-memory for dev; upgrade to Redis if needed for production
+- Voice input (Phase 4) requires Chrome or Edge (Web Speech API); text input is primary
+- Phase 3 agentic loop max iterations: 2 (conflict resolution), to avoid infinite loops and excessive API calls
+- `find_slot` (3C) is handled by the existing `/parse` endpoint, not `/suggest`; `/suggest` remains a 501 stub
+- `parseFindSlotRange` in `assistant.js` uses a NaN guard when parsing `now` — the client sends a human-readable locale string ("Friday, May 26, 2026 at 8:09 PM PDT") that `new Date()` cannot reliably parse in Node.js; falls back to server time
+- **Hook ordering gotcha in `useChat.js`:** `confirmSlot` must be declared AFTER `confirmEvent` because it closes over it. `const` is not hoisted — placing `confirmSlot` before `confirmEvent` causes a temporal dead zone crash that breaks the entire chat panel on load
+- **`parseDayHint` in `assistant.js`:** converts human-readable day strings ("June 6th", "Monday", ISO dates) to a `Date`; strips ordinal suffixes (`6th` → `6`); handles named weekdays by finding the most recent past occurrence. Used to narrow update candidate search to a single day when `day_hint` is present alongside a title filter.
+- **`forcedIntent` / `candidateId` fast paths in `/parse`:** when the frontend already knows which intent and which event to update (after user disambiguation via `UpdateCandidateCard`), it sends `{ forcedIntent, candidateId }` — the backend skips AI parsing and event search entirely, fetching the event by ID via `getEvent()` and computing patches immediately.
+- **`computeParseResult(req)` is shared:** both `/parse` and `/voice-parse` call this function; the voice route wraps the result in `{ speechReply, rawIntent, audioMetadata }` while `/parse` returns the raw result directly.
+- **`action === 'query'` always fetches calendar:** the route no longer gates on `date_known`; when the AI omits a date, it defaults to today. This prevents the "Let me check your calendar…" with no results bug caused by non-deterministic `date_known: false` outputs.
+- **Voice `continuous: true` + silence timer pattern:** `recognition.continuous = true` keeps the mic open; a 1500ms `setTimeout` fires `recognition.stop()` after speech goes quiet; `recognition.onend` then submits the accumulated transcript. `accumulatedFinal` collects all `isFinal` segments so pauses mid-sentence don't truncate. A 15s `maxListenTimer` caps each session.
+- **TTS fallback timer in `speakAndContinue`:** `setTimeout(afterSpeak, Math.max(2500, text.length * 65))` as insurance against Chrome's intermittent `utter.onend` non-fire. `afterSpeakCalled` boolean prevents double-execution.
+- **`NEGATION_RE` in `voice-parse`:** checked after affirmation but before option picker; only fires when session has pending state (`voiceDraftIntent` or `voiceActiveOptions`). Bare "cancel" with no pending state falls through to normal parse.

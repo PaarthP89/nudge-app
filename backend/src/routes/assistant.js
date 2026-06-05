@@ -549,11 +549,12 @@ async function computeParseResult(req) {
     }
   }
 
-  if (intent.action === 'query' && intent.date_known && intent.start_time) {
+  if (intent.action === 'query') {
     try {
       const { accessToken, refreshToken } = req.user;
       const calService = new GoogleCalendarService(accessToken, refreshToken);
-      const d = new Date(intent.start_time);
+      // Default to today when AI doesn't extract a concrete date
+      const d = (intent.date_known && intent.start_time) ? new Date(intent.start_time) : new Date();
       const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
       const dayEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
       const events = await calService.listEvents(dayStart, dayEnd);
@@ -621,7 +622,20 @@ router.post('/voice-parse', async (req, res, next) => {
       });
     }
 
-    // 2. Option picker interceptor — resolve cached slot/suggestion by spoken index
+    // 2. Negation interceptor — clear pending state when user says no/cancel
+    const NEGATION_RE = /^(no|nope|cancel|forget it|never ?mind|nevermind|abort|scratch that|stop that|don'?t)[.!]?$/i;
+    if (NEGATION_RE.test(message) && (req.session.voiceDraftIntent || req.session.voiceActiveOptions)) {
+      req.session.voiceDraftIntent = null;
+      req.session.voiceActiveOptions = null;
+      req.session.voiceSlotContext = null;
+      return res.json({
+        speechReply: "Okay, I've cancelled that. What else can I help you with?",
+        rawIntent: null,
+        audioMetadata: { waitForInput: true, inputExpectation: 'open_ended', clearToListen: true }
+      });
+    }
+
+    // 3. Option picker interceptor — resolve cached slot/suggestion by spoken index
     const optionIdx = parseOptionIndex(message);
     if (optionIdx !== -1 && req.session.voiceActiveOptions) {
       const { type, items } = req.session.voiceActiveOptions;
@@ -674,10 +688,10 @@ router.post('/voice-parse', async (req, res, next) => {
       }
     }
 
-    // 3. Normal fallthrough — run standard parse logic
+    // 4. Normal fallthrough — run standard parse logic
     const parseResult = await computeParseResult(req);
 
-    // 4. Store state for future interceptors on this session
+    // 5. Store state for future interceptors on this session
     const intentReady = parseResult.intent?.action === 'create' &&
       parseResult.intent.date_known &&
       parseResult.intent.time_known &&
@@ -701,7 +715,7 @@ router.post('/voice-parse', async (req, res, next) => {
       req.session.voiceSlotContext = null;
     }
 
-    // 5. Wrap response in audio-optimized format
+    // 6. Wrap response in audio-optimized format
     res.json({
       speechReply: buildSpeechReply(parseResult),
       rawIntent: parseResult.intent,

@@ -1,7 +1,8 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import CalendarView from '../components/Calendar/CalendarView';
 import ChatPanel from '../components/Chat/ChatPanel';
+import VoiceMode from '../components/Voice/VoiceMode';
 import useAuth from '../hooks/useAuth';
 
 function BellIcon() {
@@ -22,9 +23,21 @@ function AccountIcon() {
   );
 }
 
+function MicIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+      <line x1="12" y1="19" x2="12" y2="23"/>
+      <line x1="8" y1="23" x2="16" y2="23"/>
+    </svg>
+  );
+}
+
 export default function HomePage() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
+  const [voiceOpen, setVoiceOpen] = useState(false);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -53,6 +66,14 @@ export default function HomePage() {
           >
             New Event
           </button>
+          <button
+            className="app-nav-icon"
+            aria-label="Voice mode"
+            onClick={() => setVoiceOpen(true)}
+            title="Voice mode"
+          >
+            <MicIcon />
+          </button>
           <button className="app-nav-icon" aria-label="Notifications">
             <BellIcon />
           </button>
@@ -61,6 +82,8 @@ export default function HomePage() {
           </button>
         </div>
       </nav>
+
+      {voiceOpen && <VoiceMode onClose={() => setVoiceOpen(false)} />}
 
       <div className="app-body">
         <aside className="app-sidebar">
