@@ -14,8 +14,8 @@ const calendarRouter = require('./routes/calendar');
 const assistantRouter = require('./routes/assistant');
 const errorHandler = require('./middleware/errorHandler');
 
-app.set('trust proxy', 1);
 const app = express();
+app.set('trust proxy', 1); // required on Render — proxy terminates TLS, req.secure is otherwise false
 
 app.use(helmet());
 app.use(cors({

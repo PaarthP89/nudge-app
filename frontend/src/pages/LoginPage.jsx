@@ -39,7 +39,7 @@ export default function LoginPage() {
             AI-powered scheduling assistant
           </p>
         </div>
-        <a href={`${import.meta.env.VITE_API_URL}/api/auth/google`} style={{ width: '100%', textDecoration: 'none' }}>
+        <a href={`${import.meta.env.VITE_API_URL || ''}/api/auth/google`} style={{ width: '100%', textDecoration: 'none' }}>
           <button style={{
             width: '100%',
             background: '#0f62fe',
