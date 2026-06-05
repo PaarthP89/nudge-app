@@ -3,29 +3,23 @@ const requireAuth = require('../middleware/requireAuth');
 const AIService = require('../services/ai');
 const GoogleCalendarService = require('../services/googleCalendar');
 const GmailService = require('../services/gmail');
+const { stripMarkdown, flattenOptionsToSpeech } = require('../services/speechUtils');
 const { detectConflicts } = GoogleCalendarService;
 
 const router = express.Router();
 router.use(requireAuth);
 
-// Converts a natural-language day reference (day_hint) to a Date on which to search.
-// Handles "June 6th", "June 6", "Monday", "tuesday", ISO dates, etc.
-// Returns null if the hint is unrecognisable (caller falls back to 7-day window).
 function parseDayHint(hint, now = new Date()) {
   if (!hint || typeof hint !== 'string') return null;
-  // Strip ordinal suffixes: "6th" → "6", "1st" → "1"
   const s = hint.trim().replace(/(\d+)(st|nd|rd|th)\b/gi, '$1');
 
-  // Try "<month> <day>" with current year, e.g. "June 6 2026"
   const withYear = `${s} ${now.getFullYear()}`;
   let d = new Date(withYear);
   if (!isNaN(d.getTime())) return d;
 
-  // Try direct parse (ISO strings, "2026-06-06", full dates)
   d = new Date(s);
   if (!isNaN(d.getTime())) return d;
 
-  // Day-of-week: find most recent past occurrence (including today)
   const dow = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
   const idx = dow.indexOf(s.toLowerCase());
   if (idx !== -1) {
@@ -72,19 +66,15 @@ function computeUpdatePatches(candidate, intent) {
     newStart    = new Date(newStart.getTime() + delta);
     timeChanged = true;
   } else if (intent.new_date) {
-    // AI explicitly extracted the destination date as a human-readable string.
-    // Prefer this over start_time, which may have been set to the SOURCE date.
     const destDate = parseDayHint(intent.new_date);
     if (destDate) {
       if (intent.new_time) {
-        // new_time provided — parse it on the destination date
         const destTime = parseTimeHint(intent.new_time, destDate);
         newStart = destTime ?? new Date(
           destDate.getFullYear(), destDate.getMonth(), destDate.getDate(),
           candidateStart.getHours(), candidateStart.getMinutes(), 0, 0
         );
       } else {
-        // keep the same time of day on the new date
         newStart = new Date(
           destDate.getFullYear(), destDate.getMonth(), destDate.getDate(),
           candidateStart.getHours(), candidateStart.getMinutes(), 0, 0
@@ -97,7 +87,6 @@ function computeUpdatePatches(candidate, intent) {
     if (intent.time_known && !intent.preserve_time) {
       newStart = intentStart;
     } else {
-      // preserve_time or date-only: keep candidate's time of day
       newStart = new Date(
         intentStart.getFullYear(), intentStart.getMonth(), intentStart.getDate(),
         candidateStart.getHours(), candidateStart.getMinutes(), 0, 0
@@ -153,6 +142,51 @@ function slotsOverlap(slot, ev) {
   return new Date(slot.start_time) < new Date(ev.end) && new Date(slot.end_time) > new Date(ev.start);
 }
 
+// ── Voice interceptor helpers ──────────────────────────────────────────────────
+
+const AFFIRMATION_RE = /^(yes|yep|yeah|yup|sure|okay|ok|go ahead|confirm|do it|sounds good|let'?s do it|let'?s go|absolutely|correct|that works|perfect|great|right)[.!]?$/i;
+
+function parseOptionIndex(msg) {
+  const lc = msg.toLowerCase().trim();
+  const ordinals = { one: 0, first: 0, '1': 0, two: 1, second: 1, '2': 1, three: 2, third: 2, '3': 2 };
+  const m = lc.match(/(?:option|number)\s+(one|two|three|1|2|3)|the\s+(first|second|third)\s+one|^(1|2|3)$/);
+  if (!m) return -1;
+  const word = m[1] || m[2] || m[3];
+  return ordinals[word] ?? -1;
+}
+
+function buildSpeechReply(parseResult) {
+  const { reply, slotOptions, queryResults, candidates, suggestions } = parseResult;
+  if (slotOptions?.slots?.length > 0) return flattenOptionsToSpeech(slotOptions.slots, 'slots');
+  if (queryResults?.length > 0) return flattenOptionsToSpeech(queryResults, 'events');
+  if (candidates?.length > 1) return flattenOptionsToSpeech(candidates, 'events');
+  if (suggestions?.length > 0) return flattenOptionsToSpeech(suggestions, 'slots');
+  return stripMarkdown(reply);
+}
+
+function buildAudioMetadata(parseResult) {
+  const { intent, conflicts, slotOptions, queryResults, candidates, updateProposal, batchPlan, suggestions } = parseResult;
+  if (slotOptions?.slots?.length > 0 || suggestions?.length > 0 || candidates?.length > 1) {
+    return { waitForInput: true, inputExpectation: 'option_selection', clearToListen: true };
+  }
+  if (candidates?.length === 1 || batchPlan || updateProposal) {
+    return { waitForInput: true, inputExpectation: 'binary_affirmation', clearToListen: true };
+  }
+  if (
+    intent?.action === 'create' &&
+    intent?.date_known &&
+    intent?.time_known &&
+    intent?.title &&
+    intent?.confidence >= 0.5 &&
+    !conflicts?.length
+  ) {
+    return { waitForInput: true, inputExpectation: 'binary_affirmation', clearToListen: true };
+  }
+  return { waitForInput: true, inputExpectation: 'open_ended', clearToListen: true };
+}
+
+// ── Shared utilities ───────────────────────────────────────────────────────────
+
 const MAX_MESSAGE_LEN = 1000;
 
 function getContext(req) {
@@ -188,216 +222,207 @@ function validateHistory(raw) {
     .map(m => ({ role: m.role, content: m.content.slice(0, 500) }));
 }
 
-async function runParse(req, res, next) {
-  try {
-    // Fast path: caller is resolving a previously ambiguous candidate.
-    // forcedIntent skips AI parsing; candidateId pins a specific event for update.
-    const forcedIntent = req.body.forcedIntent;
-    const candidateId  = req.body.candidateId;
+// ── Core parse logic (no res writing) ─────────────────────────────────────────
 
-    const service = new AIService();
-    let intent;
-    let message = '';
-    if (forcedIntent && typeof forcedIntent === 'object') {
-      intent = forcedIntent;
+async function computeParseResult(req) {
+  const forcedIntent = req.body.forcedIntent;
+  const candidateId  = req.body.candidateId;
+
+  const service = new AIService();
+  let intent;
+  let message = '';
+
+  if (forcedIntent && typeof forcedIntent === 'object') {
+    intent = forcedIntent;
+  } else {
+    message = (req.body.message || '').trim();
+    const history = validateHistory(req.body.history);
+
+    if (history.length > 0) {
+      const messages = [...history, { role: 'user', content: message }];
+      intent = await service.chat(messages, getContext(req));
     } else {
-      message = validateMessage(req, res);
-      if (!message) return;
+      intent = await service.parseIntent(message, getContext(req));
+    }
+  }
 
-      const history = validateHistory(req.body.history);
+  if (intent.action === 'unknown' && message) {
+    const lc = message.toLowerCase();
+    if (/\b(delete|remove|cancel|get rid of)\b/.test(lc))        intent.action = 'delete';
+    else if (/\b(schedule|book|create|add|set up|plan)\b/.test(lc)) intent.action = 'create';
+    else if (/\b(move|reschedule|change|update|shift|push back)\b/.test(lc)) intent.action = 'update';
+    else if (/\b(what|show|do i have|check my|look up)\b.*\b(calendar|schedule|today|tomorrow|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lc)) intent.action = 'query';
+    else if (/\b(find me|find time|free time|open slot|available|when am i free|fit in)\b/.test(lc)) intent.action = 'find_slot';
+    if (intent.action !== 'unknown') intent.confidence = Math.max(intent.confidence, 0.5);
+  }
 
-      if (history.length > 0) {
-        const messages = [...history, { role: 'user', content: message }];
-        intent = await service.chat(messages, getContext(req));
-      } else {
-        intent = await service.parseIntent(message, getContext(req));
+  let reply = AIService.buildIntentReply(intent);
+  let conflicts = [];
+  let suggestions = [];
+  let candidates = [];
+  let loopIterations = 0;
+  let batchPlan = null;
+  let slotOptions = null;
+  let updateProposal = null;
+  let queryResults = null;
+
+  if (intent.action === 'create' && intent.recurrence) {
+    try {
+      const expandedInstances = await service.expandRecurrence(intent, getContext(req));
+      if (expandedInstances.length > 0) {
+        const { accessToken, refreshToken } = req.user;
+        const calService = new GoogleCalendarService(accessToken, refreshToken);
+        const times = expandedInstances.map(i => new Date(i.start_time).getTime());
+        const ends  = expandedInstances.map(i => new Date(i.end_time).getTime());
+        const rangeStart = new Date(Math.min(...times));
+        const rangeEnd   = new Date(Math.max(...ends));
+        const events = await calService.listEvents(rangeStart, rangeEnd);
+
+        const annotated = expandedInstances.map(inst => ({
+          ...inst,
+          attendees: intent.attendees || [],
+          location:  intent.location  || null,
+          conflicts: detectConflicts(events, { action: 'create', start_time: inst.start_time, end_time: inst.end_time }),
+        }));
+
+        const conflictCount = annotated.filter(i => i.conflicts.length > 0).length;
+        const eventLabel = `"${intent.title || 'event'}"`;
+        const summary = conflictCount > 0
+          ? `${annotated.length} ${eventLabel} events — ${conflictCount} conflict${conflictCount > 1 ? 's' : ''}`
+          : `${annotated.length} ${eventLabel} events ready to schedule`;
+
+        batchPlan = { instances: annotated, summary };
+        reply = conflictCount > 0
+          ? `Found ${conflictCount} conflict${conflictCount > 1 ? 's' : ''}. Review the plan below.`
+          : `All ${annotated.length} slots are available! Review and confirm below.`;
       }
+    } catch (err) {
+      console.error('[assistant] expandRecurrence error:', err.message);
     }
+  } else if (intent.action === 'create' && intent.start_time && intent.date_known && intent.time_known) {
+    const { accessToken, refreshToken } = req.user;
+    const calService = new GoogleCalendarService(accessToken, refreshToken);
+    const windowStart = new Date(intent.start_time);
+    const windowEnd = intent.end_time
+      ? new Date(intent.end_time)
+      : new Date(windowStart.getTime() + (intent.duration_minutes ?? 60) * 60 * 1000);
+    const events = await calService.listEvents(windowStart, windowEnd);
+    conflicts = detectConflicts(events, intent);
 
-    // If the model returned 'unknown' but the raw message has an unambiguous action keyword,
-    // override the action so the downstream search blocks can run.
-    if (intent.action === 'unknown' && message) {
-      const lc = message.toLowerCase();
-      if (/\b(delete|remove|cancel|get rid of)\b/.test(lc))        intent.action = 'delete';
-      else if (/\b(schedule|book|create|add|set up|plan)\b/.test(lc)) intent.action = 'create';
-      else if (/\b(move|reschedule|change|update|shift|push back)\b/.test(lc)) intent.action = 'update';
-      else if (/\b(what|show|do i have|check my|look up)\b.*\b(calendar|schedule|today|tomorrow|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lc)) intent.action = 'query';
-      else if (/\b(find me|find time|free time|open slot|available|when am i free|fit in)\b/.test(lc)) intent.action = 'find_slot';
-      if (intent.action !== 'unknown') intent.confidence = Math.max(intent.confidence, 0.5);
-    }
-
-    let reply = AIService.buildIntentReply(intent);
-
-    let conflicts = [];
-    let suggestions = [];
-    let candidates = [];
-    let loopIterations = 0;
-    let batchPlan = null;
-    let slotOptions = null;
-
-    if (intent.action === 'create' && intent.recurrence) {
+    if (conflicts.length > 0) {
       try {
-        const expandedInstances = await service.expandRecurrence(intent, getContext(req));
-        if (expandedInstances.length > 0) {
-          const { accessToken, refreshToken } = req.user;
-          const calService = new GoogleCalendarService(accessToken, refreshToken);
-          const times = expandedInstances.map(i => new Date(i.start_time).getTime());
-          const ends  = expandedInstances.map(i => new Date(i.end_time).getTime());
-          const rangeStart = new Date(Math.min(...times));
-          const rangeEnd   = new Date(Math.max(...ends));
-          const events = await calService.listEvents(rangeStart, rangeEnd);
+        let rawSuggestions = await service.suggestSlots(intent, conflicts, {});
+        let cleanSuggestions = [];
+        let excludeRanges = [];
 
-          const annotated = expandedInstances.map(inst => ({
-            ...inst,
-            attendees: intent.attendees || [],
-            location:  intent.location  || null,
-            conflicts: detectConflicts(events, { action: 'create', start_time: inst.start_time, end_time: inst.end_time }),
-          }));
-
-          const conflictCount = annotated.filter(i => i.conflicts.length > 0).length;
-          const eventLabel = `"${intent.title || 'event'}"`;
-          const summary = conflictCount > 0
-            ? `${annotated.length} ${eventLabel} events — ${conflictCount} conflict${conflictCount > 1 ? 's' : ''}`
-            : `${annotated.length} ${eventLabel} events ready to schedule`;
-
-          batchPlan = { instances: annotated, summary };
-          reply = conflictCount > 0
-            ? `Found ${conflictCount} conflict${conflictCount > 1 ? 's' : ''}. Review the plan below.`
-            : `All ${annotated.length} slots are available! Review and confirm below.`;
+        while (cleanSuggestions.length === 0 && loopIterations < 2) {
+          for (const suggestion of rawSuggestions) {
+            const suggestionConflicts = detectConflicts(events, {
+              action: 'create',
+              start_time: suggestion.start_time,
+              end_time: suggestion.end_time,
+              duration_minutes: intent.duration_minutes,
+            });
+            if (suggestionConflicts.length === 0) {
+              cleanSuggestions.push(suggestion);
+            } else {
+              excludeRanges.push({ start: suggestion.start_time, end: suggestion.end_time });
+            }
+          }
+          if (cleanSuggestions.length === 0 && loopIterations < 1) {
+            rawSuggestions = await service.suggestSlots(intent, conflicts, { excludeRanges });
+            loopIterations++;
+          } else {
+            break;
+          }
         }
+
+        suggestions = cleanSuggestions.length > 0 ? cleanSuggestions : rawSuggestions;
       } catch (err) {
-        console.error('[assistant] expandRecurrence error:', err.message);
+        console.error('[assistant] suggestSlots error:', err.message);
       }
-    } else if (intent.action === 'create' && intent.start_time && intent.date_known && intent.time_known) {
+    }
+  }
+
+  if (intent.action === 'delete') {
+    try {
       const { accessToken, refreshToken } = req.user;
       const calService = new GoogleCalendarService(accessToken, refreshToken);
-      const windowStart = new Date(intent.start_time);
-      const windowEnd = intent.end_time
-        ? new Date(intent.end_time)
-        : new Date(windowStart.getTime() + (intent.duration_minutes ?? 60) * 60 * 1000);
-      const events = await calService.listEvents(windowStart, windowEnd);
-      conflicts = detectConflicts(events, intent);
 
-      if (conflicts.length > 0) {
-        try {
-          let rawSuggestions = await service.suggestSlots(intent, conflicts, {});
-          let cleanSuggestions = [];
-          let excludeRanges = [];
+      let searchStart, searchEnd;
 
-          while (cleanSuggestions.length === 0 && loopIterations < 2) {
-            for (const suggestion of rawSuggestions) {
-              const suggestionConflicts = detectConflicts(events, {
-                action: 'create',
-                start_time: suggestion.start_time,
-                end_time: suggestion.end_time,
-                duration_minutes: intent.duration_minutes,
-              });
-              if (suggestionConflicts.length === 0) {
-                cleanSuggestions.push(suggestion);
-              } else {
-                excludeRanges.push({ start: suggestion.start_time, end: suggestion.end_time });
-              }
-            }
-            if (cleanSuggestions.length === 0 && loopIterations < 1) {
-              rawSuggestions = await service.suggestSlots(intent, conflicts, { excludeRanges });
-              loopIterations++;
-            } else {
-              break;
-            }
-          }
-
-          suggestions = cleanSuggestions.length > 0 ? cleanSuggestions : rawSuggestions;
-        } catch (err) {
-          console.error('[assistant] suggestSlots error:', err.message);
-        }
-      }
-    }
-
-    if (intent.action === 'delete') {
-      try {
-        const { accessToken, refreshToken } = req.user;
-        const calService = new GoogleCalendarService(accessToken, refreshToken);
-
-        let searchStart, searchEnd;
-
-        if (intent.date_known && intent.start_time) {
-          const d = new Date(intent.start_time);
-          if (intent.time_known) {
-            searchStart = new Date(d.getTime() - 30 * 60 * 1000);
-            searchEnd   = new Date(d.getTime() + 90 * 60 * 1000);
-          } else {
-            searchStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
-            searchEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
-          }
-        } else if (intent.title) {
-          searchStart = new Date();
-          searchEnd   = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-        }
-
-        if (searchStart && searchEnd) {
-          const events = await calService.listEvents(searchStart, searchEnd);
-          let matches = events.filter(ev => !ev.allDay);
-
-          if (intent.title) {
-            const needle = intent.title.toLowerCase();
-            const titled = matches.filter(ev =>
-              ev.title?.toLowerCase().includes(needle) ||
-              needle.includes(ev.title?.toLowerCase() ?? '')
-            );
-            if (titled.length > 0) matches = titled;
-          }
-
-          candidates = matches.slice(0, 3);
-        }
-
-        if (candidates.length === 1) {
-          reply = `Found "${candidates[0].title}" — confirm deletion?`;
-        } else if (candidates.length > 1) {
-          reply = `Found ${candidates.length} events in that window — which one should I delete?`;
+      if (intent.date_known && intent.start_time) {
+        const d = new Date(intent.start_time);
+        if (intent.time_known) {
+          searchStart = new Date(d.getTime() - 30 * 60 * 1000);
+          searchEnd   = new Date(d.getTime() + 90 * 60 * 1000);
         } else {
-          reply = intent.title
-            ? `I couldn't find an event called "${intent.title}" in your calendar.`
-            : "I couldn't find a matching event in your calendar.";
+          searchStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
+          searchEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
         }
-      } catch (err) {
-        console.error('[assistant] delete search error:', err.message);
+      } else if (intent.title) {
+        searchStart = new Date();
+        searchEnd   = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       }
-    }
 
-    let updateProposal = null;
+      if (searchStart && searchEnd) {
+        const events = await calService.listEvents(searchStart, searchEnd);
+        let matches = events.filter(ev => !ev.allDay);
 
-    if (intent.action === 'update') {
-      try {
-        const { accessToken, refreshToken } = req.user;
-        const calService = new GoogleCalendarService(accessToken, refreshToken);
-        const titleFilter = intent.title_hint ?? intent.title;
-
-        // Fast path: user already picked a specific candidate.
-        if (candidateId) {
-          try {
-            const event = await calService.getEvent(candidateId);
-            candidates = [event];
-          } catch (e) {
-            // fall through to search if fetch fails
-          }
+        if (intent.title) {
+          const needle = intent.title.toLowerCase();
+          const titled = matches.filter(ev =>
+            ev.title?.toLowerCase().includes(needle) ||
+            needle.includes(ev.title?.toLowerCase() ?? '')
+          );
+          if (titled.length > 0) matches = titled;
         }
 
-        let searchStart, searchEnd;
+        candidates = matches.slice(0, 3);
+      }
 
-        const timeHintDate = parseTimeHint(intent.time_hint);
-        const dayHintDate  = parseDayHint(intent.day_hint);
+      if (candidates.length === 1) {
+        reply = `Found "${candidates[0].title}" — confirm deletion?`;
+      } else if (candidates.length > 1) {
+        reply = `Found ${candidates.length} events in that window — which one should I delete?`;
+      } else {
+        reply = intent.title
+          ? `I couldn't find an event called "${intent.title}" in your calendar.`
+          : "I couldn't find a matching event in your calendar.";
+      }
+    } catch (err) {
+      console.error('[assistant] delete search error:', err.message);
+    }
+  }
 
-        if (candidates.length === 0) {
+  if (intent.action === 'update') {
+    try {
+      const { accessToken, refreshToken } = req.user;
+      const calService = new GoogleCalendarService(accessToken, refreshToken);
+      const titleFilter = intent.title_hint ?? intent.title;
+
+      if (candidateId) {
+        try {
+          const event = await calService.getEvent(candidateId);
+          candidates = [event];
+        } catch (e) {
+          // fall through to search if fetch fails
+        }
+      }
+
+      let searchStart, searchEnd;
+
+      const timeHintDate = parseTimeHint(intent.time_hint);
+      const dayHintDate  = parseDayHint(intent.day_hint);
+
+      if (candidates.length === 0) {
         if (timeHintDate) {
-          // time_hint unambiguously refers to current event's time
           searchStart = new Date(timeHintDate.getTime() - 90 * 60 * 1000);
           searchEnd   = new Date(timeHintDate.getTime() + 90 * 60 * 1000);
         } else if (titleFilter && dayHintDate) {
-          // User named both the event title and its source day — search only that day.
           searchStart = new Date(dayHintDate.getFullYear(), dayHintDate.getMonth(), dayHintDate.getDate(), 0, 0, 0);
           searchEnd   = new Date(dayHintDate.getFullYear(), dayHintDate.getMonth(), dayHintDate.getDate(), 23, 59, 59);
         } else if (titleFilter) {
-          // title search is safer than start_time (which for update is the NEW desired time)
           searchStart = new Date();
           searchEnd   = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         } else if (intent.date_known && intent.start_time) {
@@ -427,9 +452,6 @@ async function runParse(req, res, next) {
           candidates = matches.slice(0, 3);
         }
 
-        // Fallback: if time_hint search found nothing but we have a specific date, retry
-        // using that date as the reference. Covers "move my event tomorrow at 1pm" where
-        // parseTimeHint uses today by default and misses an event on a different day.
         if (candidates.length === 0 && intent.time_hint && intent.date_known && intent.start_time) {
           const timeHintOnDate = parseTimeHint(intent.time_hint, new Date(intent.start_time));
           const altStart = new Date(timeHintOnDate.getTime() - 90 * 60 * 1000);
@@ -446,123 +468,252 @@ async function runParse(req, res, next) {
           }
           candidates = altMatches.slice(0, 3);
         }
-        } // end if (candidates.length === 0) search block
-
-        if (candidates.length === 0) {
-          reply = titleFilter
-            ? `I couldn't find an event called "${titleFilter}" in your calendar.`
-            : "I couldn't find a matching event in your calendar.";
-        } else if (candidates.length === 1) {
-          const candidate = candidates[0];
-          const patches   = computeUpdatePatches(candidate, intent);
-
-          let updateConflicts = [];
-          if (patches.start && patches.end) {
-            const windowStart = new Date(patches.start.dateTime);
-            const windowEnd   = new Date(patches.end.dateTime);
-            const checkEvents = await calService.listEvents(
-              new Date(windowStart.getTime() - 5 * 60 * 1000),
-              new Date(windowEnd.getTime()   + 5 * 60 * 1000)
-            );
-            updateConflicts = detectConflicts(
-              checkEvents.filter(ev => ev.id !== candidate.id),
-              { action: 'create', start_time: patches.start.dateTime, end_time: patches.end.dateTime }
-            );
-          }
-
-          updateProposal = {
-            candidate,
-            patches,
-            after: {
-              id:    candidate.id,
-              title: patches.summary        ?? candidate.title,
-              start: patches.start?.dateTime ?? candidate.start,
-              end:   patches.end?.dateTime   ?? candidate.end,
-            },
-            conflicts: updateConflicts
-          };
-
-          reply = updateConflicts.length > 0
-            ? `Found "${candidate.title}" — the new time has a conflict. Update anyway?`
-            : `Found "${candidate.title}" — ready to update?`;
-        } else {
-          reply = `Found ${candidates.length} events with that name — which one would you like to update?`;
-        }
-      } catch (err) {
-        console.error('[assistant] update search error:', err.message);
       }
-    }
 
-    if (intent.action === 'find_slot') {
-      try {
-        const { accessToken, refreshToken } = req.user;
-        const calService = new GoogleCalendarService(accessToken, refreshToken);
-        const ctx = getContext(req);
-        const { start, end } = parseFindSlotRange(intent, ctx);
-        const events = await calService.listEvents(start, end);
-        const duration = intent.duration_minutes || 60;
-        const rawSlots = await service.findFreeSlots(events, duration, intent.preferences || {}, {
-          targetPeriod: intent.target_period || 'today',
-          ...ctx
-        });
-        const validSlots = rawSlots.filter(slot =>
-          !events.some(ev => !ev.allDay && slotsOverlap(slot, ev))
-        );
-        slotOptions = {
-          slots: validSlots.slice(0, 3),
-          title: intent.title,
-          duration,
-          attendees: intent.attendees || []
+      if (candidates.length === 0) {
+        reply = titleFilter
+          ? `I couldn't find an event called "${titleFilter}" in your calendar.`
+          : "I couldn't find a matching event in your calendar.";
+      } else if (candidates.length === 1) {
+        const candidate = candidates[0];
+        const patches   = computeUpdatePatches(candidate, intent);
+
+        let updateConflicts = [];
+        if (patches.start && patches.end) {
+          const windowStart = new Date(patches.start.dateTime);
+          const windowEnd   = new Date(patches.end.dateTime);
+          const checkEvents = await calService.listEvents(
+            new Date(windowStart.getTime() - 5 * 60 * 1000),
+            new Date(windowEnd.getTime()   + 5 * 60 * 1000)
+          );
+          updateConflicts = detectConflicts(
+            checkEvents.filter(ev => ev.id !== candidate.id),
+            { action: 'create', start_time: patches.start.dateTime, end_time: patches.end.dateTime }
+          );
+        }
+
+        updateProposal = {
+          candidate,
+          patches,
+          after: {
+            id:    candidate.id,
+            title: patches.summary        ?? candidate.title,
+            start: patches.start?.dateTime ?? candidate.start,
+            end:   patches.end?.dateTime   ?? candidate.end,
+          },
+          conflicts: updateConflicts
         };
-        if (validSlots.length > 0) {
-          const n = validSlots.length;
-          reply = `Found ${n} option${n > 1 ? 's' : ''} for you:`;
-        } else {
-          reply = "I couldn't find any free time in that window. Try a different day?";
-        }
-      } catch (err) {
-        console.error('[assistant] findFreeSlots error:', err.message);
-        slotOptions = { slots: [], title: intent.title, duration: intent.duration_minutes || 60, attendees: intent.attendees || [] };
-        reply = "Couldn't check your calendar for free time. Please try again.";
+
+        reply = updateConflicts.length > 0
+          ? `Found "${candidate.title}" — the new time has a conflict. Update anyway?`
+          : `Found "${candidate.title}" — ready to update?`;
+      } else {
+        reply = `Found ${candidates.length} events with that name — which one would you like to update?`;
       }
+    } catch (err) {
+      console.error('[assistant] update search error:', err.message);
     }
+  }
 
-    let queryResults = null;
-
-    if (intent.action === 'query' && intent.date_known && intent.start_time) {
-      try {
-        const { accessToken, refreshToken } = req.user;
-        const calService = new GoogleCalendarService(accessToken, refreshToken);
-        const d = new Date(intent.start_time);
-        const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
-        const dayEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
-        const events = await calService.listEvents(dayStart, dayEnd);
-        queryResults = events;
-        if (events.length === 0) {
-          reply = `Nothing on your calendar for ${d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}.`;
-        } else {
-          reply = `Here's what's on your calendar for ${d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}:`;
-        }
-      } catch (err) {
-        console.error('[assistant] query error:', err.message);
+  if (intent.action === 'find_slot') {
+    try {
+      const { accessToken, refreshToken } = req.user;
+      const calService = new GoogleCalendarService(accessToken, refreshToken);
+      const ctx = getContext(req);
+      const { start, end } = parseFindSlotRange(intent, ctx);
+      const events = await calService.listEvents(start, end);
+      const duration = intent.duration_minutes || 60;
+      const rawSlots = await service.findFreeSlots(events, duration, intent.preferences || {}, {
+        targetPeriod: intent.target_period || 'today',
+        ...ctx
+      });
+      const validSlots = rawSlots.filter(slot =>
+        !events.some(ev => !ev.allDay && slotsOverlap(slot, ev))
+      );
+      slotOptions = {
+        slots: validSlots.slice(0, 3),
+        title: intent.title,
+        duration,
+        attendees: intent.attendees || []
+      };
+      if (validSlots.length > 0) {
+        const n = validSlots.length;
+        reply = `Found ${n} option${n > 1 ? 's' : ''} for you:`;
+      } else {
+        reply = "I couldn't find any free time in that window. Try a different day?";
       }
+    } catch (err) {
+      console.error('[assistant] findFreeSlots error:', err.message);
+      slotOptions = { slots: [], title: intent.title, duration: intent.duration_minutes || 60, attendees: intent.attendees || [] };
+      reply = "Couldn't check your calendar for free time. Please try again.";
     }
+  }
 
-    res.json({ intent, reply, conflicts, suggestions, candidates, queryResults, loopIterations, updateProposal, batchPlan, slotOptions });
+  if (intent.action === 'query' && intent.date_known && intent.start_time) {
+    try {
+      const { accessToken, refreshToken } = req.user;
+      const calService = new GoogleCalendarService(accessToken, refreshToken);
+      const d = new Date(intent.start_time);
+      const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0);
+      const dayEnd   = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59);
+      const events = await calService.listEvents(dayStart, dayEnd);
+      queryResults = events;
+      if (events.length === 0) {
+        reply = `Nothing on your calendar for ${d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}.`;
+      } else {
+        reply = `Here's what's on your calendar for ${d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}:`;
+      }
+    } catch (err) {
+      console.error('[assistant] query error:', err.message);
+    }
+  }
+
+  return { intent, reply, conflicts, suggestions, candidates, queryResults, loopIterations, updateProposal, batchPlan, slotOptions };
+}
+
+function handle429(err, res, next) {
+  const msg = String(err.message || '');
+  const is429 = err.status === 429 || err.statusCode === 429 ||
+                msg.includes('429') || msg.toLowerCase().includes('resource_exhausted');
+  if (is429) {
+    res.status(429).json({ error: 'Rate limit reached. Please wait a moment and try again.' });
+    return true;
+  }
+  return false;
+}
+
+async function runParse(req, res, next) {
+  try {
+    if (!req.body.forcedIntent) {
+      const msg = validateMessage(req, res);
+      if (!msg) return;
+    }
+    const result = await computeParseResult(req);
+    res.json(result);
   } catch (err) {
     console.error('[assistant] AI service error:', err.status, err.statusCode, err.message);
-    const msg = String(err.message || '');
-    const is429 = err.status === 429 || err.statusCode === 429 ||
-                  msg.includes('429') || msg.toLowerCase().includes('resource_exhausted');
-    if (is429) {
-      return res.status(429).json({ error: 'Rate limit reached. Please wait a moment and try again.' });
-    }
-    next(err);
+    if (!handle429(err, res, next)) next(err);
   }
 }
 
 router.post('/parse', runParse);
 router.post('/chat', runParse);
+
+// ── POST /api/assistant/voice-parse ───────────────────────────────────────────
+
+router.post('/voice-parse', async (req, res, next) => {
+  try {
+    const message = validateMessage(req, res);
+    if (!message) return;
+
+    // 1. Binary confirmation interceptor — skip LLM when user says yes to a pending draft
+    if (AFFIRMATION_RE.test(message) && req.session.voiceDraftIntent) {
+      const draftIntent = req.session.voiceDraftIntent;
+      const { accessToken, refreshToken } = req.user;
+      const calService = new GoogleCalendarService(accessToken, refreshToken);
+      const event = await calService.createEvent(draftIntent);
+      req.session.voiceDraftIntent = null;
+      req.session.voiceActiveOptions = null;
+      return res.json({
+        speechReply: `Done! I've scheduled "${event.title}". Is there anything else?`,
+        rawIntent: draftIntent,
+        audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
+      });
+    }
+
+    // 2. Option picker interceptor — resolve cached slot/suggestion by spoken index
+    const optionIdx = parseOptionIndex(message);
+    if (optionIdx !== -1 && req.session.voiceActiveOptions) {
+      const { type, items } = req.session.voiceActiveOptions;
+      const selected = items[optionIdx];
+
+      if (!selected) {
+        return res.json({
+          speechReply: `I don't have an option ${optionIdx + 1}. Please try saying option one, two, or three.`,
+          rawIntent: null,
+          audioMetadata: { waitForInput: true, inputExpectation: 'option_selection', clearToListen: true }
+        });
+      }
+
+      const { accessToken, refreshToken } = req.user;
+      const calService = new GoogleCalendarService(accessToken, refreshToken);
+
+      if (type === 'slots') {
+        const slotCtx = req.session.voiceSlotContext || {};
+        const intent = {
+          action: 'create',
+          title: slotCtx.title || 'Event',
+          start_time: selected.start_time,
+          end_time: selected.end_time,
+          duration_minutes: slotCtx.duration || 60,
+          attendees: slotCtx.attendees || [],
+          location: null,
+          confidence: 1.0,
+        };
+        const event = await calService.createEvent(intent);
+        req.session.voiceActiveOptions = null;
+        req.session.voiceSlotContext = null;
+        return res.json({
+          speechReply: `Done! I've scheduled "${event.title}".`,
+          rawIntent: intent,
+          audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
+        });
+      }
+
+      if (type === 'suggestions') {
+        const baseDraft = req.session.voiceDraftIntent || {};
+        const intent = { ...baseDraft, action: 'create', start_time: selected.start_time, end_time: selected.end_time };
+        const event = await calService.createEvent(intent);
+        req.session.voiceDraftIntent = null;
+        req.session.voiceActiveOptions = null;
+        return res.json({
+          speechReply: `Done! I've scheduled "${event.title}".`,
+          rawIntent: intent,
+          audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
+        });
+      }
+    }
+
+    // 3. Normal fallthrough — run standard parse logic
+    const parseResult = await computeParseResult(req);
+
+    // 4. Store state for future interceptors on this session
+    const intentReady = parseResult.intent?.action === 'create' &&
+      parseResult.intent.date_known &&
+      parseResult.intent.time_known &&
+      parseResult.intent.title &&
+      parseResult.intent.confidence >= 0.5 &&
+      !parseResult.conflicts?.length &&
+      !parseResult.batchPlan;
+    req.session.voiceDraftIntent = intentReady ? parseResult.intent : null;
+
+    if (parseResult.slotOptions?.slots?.length > 0) {
+      req.session.voiceActiveOptions = { type: 'slots', items: parseResult.slotOptions.slots };
+      req.session.voiceSlotContext = {
+        title: parseResult.slotOptions.title,
+        duration: parseResult.slotOptions.duration,
+        attendees: parseResult.slotOptions.attendees,
+      };
+    } else if (parseResult.suggestions?.length > 0) {
+      req.session.voiceActiveOptions = { type: 'suggestions', items: parseResult.suggestions };
+    } else {
+      req.session.voiceActiveOptions = null;
+      req.session.voiceSlotContext = null;
+    }
+
+    // 5. Wrap response in audio-optimized format
+    res.json({
+      speechReply: buildSpeechReply(parseResult),
+      rawIntent: parseResult.intent,
+      audioMetadata: buildAudioMetadata(parseResult),
+    });
+  } catch (err) {
+    console.error('[assistant] voice-parse error:', err.status, err.statusCode, err.message);
+    if (!handle429(err, res, next)) next(err);
+  }
+});
+
+// ── POST /api/assistant/confirm ───────────────────────────────────────────────
 
 router.post('/confirm', async (req, res, next) => {
   try {

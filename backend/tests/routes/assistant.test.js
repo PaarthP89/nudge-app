@@ -1231,3 +1231,111 @@ describe('POST /api/assistant/parse — 3C find_slot', () => {
     expect(res.body.slotOptions.slots).toHaveLength(0);
   });
 });
+
+// ── Phase 4: voice-parse ──────────────────────────────────────────────────────
+
+describe('POST /api/assistant/voice-parse — unauthenticated', () => {
+  beforeEach(() => { mockIsAuthenticated = false; });
+
+  it('returns 401', async () => {
+    const res = await request(app).post('/api/assistant/voice-parse').send({ message: 'hello' });
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /api/assistant/voice-parse — Phase 4 interceptors and fallthrough', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('Binary interceptor skips LLM and confirms active draft', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+
+    // Step 1: seed the session draft via a standard parse
+    const agent = request.agent(app);
+    await agent
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Schedule team standup tomorrow at 9am' });
+
+    // Step 2: swap mock so we can prove Groq is NOT called on the second request
+    const parseIntentSpy = jest.fn();
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentSpy,
+      chat: parseIntentSpy,
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    // Keep createEvent wired for the confirm path
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+
+    const res = await agent
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Yes' });
+
+    expect(res.status).toBe(200);
+    expect(parseIntentSpy).not.toHaveBeenCalled();
+    expect(createEvent).toHaveBeenCalled();
+    expect(typeof res.body.speechReply).toBe('string');
+    expect(res.body.speechReply.length).toBeGreaterThan(0);
+    expect(res.body.audioMetadata.waitForInput).toBe(false);
+    expect(res.body.audioMetadata.inputExpectation).toBe('none');
+  });
+
+  it('Option picker resolves cached slot options and creates event', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue(MOCK_FREE_SLOTS),
+    }));
+
+    const agent = request.agent(app);
+
+    // Step 1: trigger find_slot to populate session active options
+    await agent
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Find me a 2-hour deep work block tomorrow' });
+
+    // Step 2: pick option two by spoken index
+    const res = await agent
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Option two' });
+
+    expect(res.status).toBe(200);
+    expect(createEvent).toHaveBeenCalled();
+    expect(typeof res.body.speechReply).toBe('string');
+    // voice reply must be free of markdown formatting symbols
+    expect(res.body.speechReply).not.toMatch(/\*\*/);
+    expect(res.body.speechReply).not.toMatch(/\n/);
+    expect(res.body.audioMetadata.waitForInput).toBe(false);
+  });
+
+  it('Standard fallthrough generates correct audio flags with zero markdown', async () => {
+    // VALID_INTENT from beforeEach: action=create, date_known+time_known, no conflicts → binary_affirmation
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Schedule a team standup tomorrow at 9am' });
+
+    expect(res.status).toBe(200);
+    expect(typeof res.body.speechReply).toBe('string');
+    expect(res.body.rawIntent).toBeDefined();
+    expect(res.body.audioMetadata).toBeDefined();
+    expect(typeof res.body.audioMetadata.waitForInput).toBe('boolean');
+    expect(typeof res.body.audioMetadata.inputExpectation).toBe('string');
+    expect(typeof res.body.audioMetadata.clearToListen).toBe('boolean');
+    expect(res.body.audioMetadata.waitForInput).toBe(true);
+    expect(res.body.audioMetadata.inputExpectation).toBe('binary_affirmation');
+    // speechReply must contain no markdown
+    expect(res.body.speechReply).not.toMatch(/\*\*/);
+    expect(res.body.speechReply).not.toMatch(/\n/);
+  });
+});
