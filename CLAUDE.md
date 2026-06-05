@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 2 complete (2026-05-22). Phase 3A/3B/3C/3D all complete (2026-05-25). All MVP + enhanced UX + agentic features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, and goal-oriented free-slot finding. Phase 3C adds `find_slot`: user says "find me a 2-hour block tomorrow" → AI reads calendar → scores free windows → SlotOptionsCard shows top 3 options with reasoning → single click schedules. 137 tests passing.
+**Status:** Phase 2 complete (2026-05-22). Phase 3A/3B/3C/3D all complete (2026-05-25). Post-Phase 3 improvements landed (2026-06-04): frontend visual redesign + event editing precision fix. All MVP + enhanced UX + agentic features working: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, and goal-oriented free-slot finding. Phase 3C adds `find_slot`: user says "find me a 2-hour block tomorrow" → AI reads calendar → scores free windows → SlotOptionsCard shows top 3 options with reasoning → single click schedules. 138 tests passing.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -13,13 +13,14 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 ### Frontend
 - **React (Vite)** — calendar grid, chat UI, voice input
+- **IBM Plex Sans** — typography via Google Fonts; applied globally in `index.css`
 - **Web Speech API** — browser-native speech-to-text for voice input (Phase 4)
 
 ### Backend
 - **Node.js + Express** — REST API, session management, OAuth proxy
 - **express-session** — session management
 - **Passport.js** — Google OAuth 2.0 authentication
-- **Testing:** Jest + Supertest (137 tests passing)
+- **Testing:** Jest + Supertest (138 tests passing)
 
 ### AI & External Services
 - **Groq SDK (llama-3.3-70b-versatile)** — intent parsing, conflict resolution, rescheduling suggestions (free tier, 30 RPM). Model is configurable via `GROQ_MODEL` env var. Service abstracted as `AIService` — swap provider by editing `src/services/ai.js` only.
@@ -55,7 +56,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
   - Today indicator and today button; today circle in date
 - [x] Text-based NL scheduling input (chat interface) — ✓ Complete (2026-05-22)
   - ChatPanel component with message thread, typing indicator, input row
-  - Message type system: text | intent | conflict | confirm | deleteConfirm | queryResult | editConfirm | batchPlan | slotOptions
+  - Message type system: text | intent | conflict | confirm | deleteConfirm | queryResult | editConfirm | batchPlan | slotOptions | updateDisambig
 - [x] AI intent parsing (extract: action, title, attendees, time, duration, location) — ✓ Complete (2026-05-22)
   - Groq via `AIService` (`src/services/ai.js`) — provider-agnostic; swap model via `GROQ_MODEL` env var
   - Currently using `llama-3.3-70b-versatile` (upgraded from 8b for reliable instruction-following)
@@ -218,7 +219,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 5. On confirm: calls `calendar.events.patch` (not delete+create — preserves event ID and existing attendees)
 6. Sends update notification emails to attendees if time changed (via `sendUpdates: 'all'` on patch)
 
-**What changed:**
+**What changed (initial implementation, 2026-05-25):**
 - `GoogleCalendarService.updateEvent(eventId, patches)` — `calendar.events.patch` with `sendUpdates: 'all'`
 - `PATCH /api/calendar/events/:id` route — implemented (was 501 stub)
 - `/parse` route: action=`update` → candidate search (time_hint > title_hint > date fallback) → `computeUpdatePatches` (handles new time, preserve_time, start_delta_minutes, duration_delta_minutes, new_title) → conflict check on new slot (excludes the candidate itself) → `updateProposal` in response
@@ -228,6 +229,19 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - `useChat.js`: `confirmUpdate` callback (PATCH + `nudge:event-updated`), handles `updateProposal` → `editConfirm` message
 - `useCalendar.js`: listens for `nudge:event-updated` to refresh calendar
 - 8 new tests; 117 total, all passing
+
+**Precision fix (2026-06-04) — same-name events on different dates:**
+- **Bug:** "move my workout on June 6th to June 8th" was finding both a June 5th and June 6th workout (title-only search searched 7 days) and then patching the wrong date because `computeUpdatePatches` used `intent.start_time` (which was the source date) instead of `intent.new_date`.
+- `parseDayHint(hint, now)` helper in `assistant.js` — converts natural-language day references ("June 6th", "Monday", ISO strings) to a `Date`; strips ordinal suffixes; handles named days of week
+- `/parse` candidate search: when both `titleFilter` and `day_hint` are present, `parseDayHint(intent.day_hint)` narrows the search to that single day (00:00–23:59), not the default 7-day window
+- `computeUpdatePatches`: now handles `intent.new_date` via `parseDayHint` + `parseTimeHint` first, before falling back to `intent.start_time`; preserves the original time of day when `preserve_time: true`
+- `GoogleCalendarService.getEvent(eventId)` — new method; fetches a single event by ID using `calendar.events.get`
+- `forcedIntent` + `candidateId` fast paths in `runParse()`: frontend can re-submit a stored intent with a pinned event ID, skipping AI re-parsing and re-searching entirely
+- `UpdateCandidateCard` in `ChatPanel.jsx` — shown when multiple candidates found for an update; user picks the right event; fires `selectUpdateCandidate` with the chosen event + stored intent
+- `updateDisambig` message type — emitted by `useChat.js` when `candidates.length > 0 && !updateProposal`
+- `selectUpdateCandidate` in `useChat.js` — posts `{ forcedIntent, candidateId }` to `/parse`; handles `updateProposal` response
+- Delete candidate time display fixed: now shows full date+time (not just time) so same-name events on different days are distinguishable
+- 1 new regression test ("moves the june-6th workout to june 8th — not the june-5th one"); 138 tests total
 
 ---
 
@@ -433,6 +447,31 @@ For batch scheduling (3A), mock `expandRecurrence` with a fixed 5-instance array
 ---
 ---
 
+## Frontend Design Overhaul (2026-06-04)
+Full visual redesign of the app shell, calendar, chat panel, and login page.
+
+**App shell (`HomePage.jsx` + `App.css`):**
+- New top nav bar: Nudge logo mark, "Calendar" tab, "New Event" button (focuses chat input), bell + account icon buttons
+- Layout uses `.app-shell` / `.app-body` / `.app-sidebar` / `.app-main` CSS classes from `App.css` instead of inline styles
+- Global reset + IBM Plex Sans font applied via new `index.css` (imported in `main.jsx`)
+
+**Calendar (`CalendarView.jsx` + `CalendarView.css`):**
+- Color palette shifted to IBM Carbon Blue (#0f62fe) + neutral grays (#313333, #7a7b7b, #efeded)
+- Toolbar reordered: period label now appears first (left), then nav controls, then view toggle
+- Floating action button (FAB) added bottom-right; clicking it focuses the chat input
+- Event chips, today circle, week-view events all updated to new palette
+
+**Chat panel (`ChatPanel.jsx` + `ChatPanel.css`):**
+- New header: avatar circle + "Nudge AI" title + green "ACTIVE PARTNER" status dot
+- Quick chips row added above input: "Schedule meeting", "Today's Brief", "Reschedule…" — clicking fills the input textarea
+- Input styling: square corners, focus shows 2px blue border
+- All color tokens updated to match app palette
+
+**Login page (`LoginPage.jsx`):**
+- Redesigned as a centered card: Nudge logo mark, tagline, full-width "Sign in with Google" button
+
+---
+
 ## Phase 4: Voice Input
 - [ ] Voice input (Web Speech API) — browser-native speech-to-text, no API cost
 
@@ -505,7 +544,10 @@ nudge-app/
 │   │   ├── hooks/
 │   │   │   ├── useCalendar.js
 │   │   │   └── useChat.js
-│   │   └── App.jsx
+│   │   ├── App.jsx
+│   │   ├── App.css         ← app shell layout (nav, sidebar, main)
+│   │   └── index.css       ← global reset + IBM Plex Sans font
+│   ├── index.html          ← IBM Plex Sans Google Fonts link
 │   ├── package.json
 │   └── vite.config.js
 ├── docs/
@@ -537,3 +579,5 @@ nudge-app/
 - `find_slot` (3C) is handled by the existing `/parse` endpoint, not `/suggest`; `/suggest` remains a 501 stub
 - `parseFindSlotRange` in `assistant.js` uses a NaN guard when parsing `now` — the client sends a human-readable locale string ("Friday, May 26, 2026 at 8:09 PM PDT") that `new Date()` cannot reliably parse in Node.js; falls back to server time
 - **Hook ordering gotcha in `useChat.js`:** `confirmSlot` must be declared AFTER `confirmEvent` because it closes over it. `const` is not hoisted — placing `confirmSlot` before `confirmEvent` causes a temporal dead zone crash that breaks the entire chat panel on load
+- **`parseDayHint` in `assistant.js`:** converts human-readable day strings ("June 6th", "Monday", ISO dates) to a `Date`; strips ordinal suffixes (`6th` → `6`); handles named weekdays by finding the most recent past occurrence. Used to narrow update candidate search to a single day when `day_hint` is present alongside a title filter.
+- **`forcedIntent` / `candidateId` fast paths in `/parse`:** when the frontend already knows which intent and which event to update (after user disambiguation via `UpdateCandidateCard`), it sends `{ forcedIntent, candidateId }` — the backend skips AI parsing and event search entirely, fetching the event by ID via `getEvent()` and computing patches immediately.
