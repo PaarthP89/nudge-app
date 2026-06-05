@@ -46,7 +46,7 @@ function extractTime(isoString) {
   return m === '00' ? `${h} ${period}` : `${h}:${m} ${period}`;
 }
 
-function flattenOptionsToSpeech(optionsArray, type = 'slots') {
+function flattenOptionsToSpeech(optionsArray, type = 'slots', timezone = 'UTC') {
   if (!optionsArray || optionsArray.length === 0) {
     return "I couldn't find any options.";
   }
@@ -65,11 +65,28 @@ function flattenOptionsToSpeech(optionsArray, type = 'slots') {
     let detail;
     if (type === 'slots') {
       const rawTime = option.start_time || '';
-      detail = `at ${extractTime(rawTime)}`;
+      if (rawTime) {
+        try {
+          detail = normalizeVocalDate(rawTime, timezone);
+        } catch (_) {
+          detail = `at ${extractTime(rawTime)}`;
+        }
+      } else {
+        detail = 'an unknown time';
+      }
     } else {
       const title = option.summary || option.title || 'an event';
-      const rawTime = option.start?.dateTime || option.start_time || '';
-      detail = rawTime ? `${title} at ${extractTime(rawTime)}` : title;
+      // Support both {start:{dateTime:'...'}} (calendar API raw) and {start:'...'} (normalized) and {start_time:'...'}
+      const rawTime = (typeof option.start === 'object' ? option.start?.dateTime : option.start) || option.start_time || '';
+      if (rawTime) {
+        try {
+          detail = `${title} on ${normalizeVocalDate(rawTime, timezone)}`;
+        } catch (_) {
+          detail = `${title} at ${extractTime(rawTime)}`;
+        }
+      } else {
+        detail = title;
+      }
     }
 
     return `${prefix} ${num} is ${detail}.`;

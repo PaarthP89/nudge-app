@@ -99,4 +99,41 @@ describe('flattenOptionsToSpeech', () => {
     expect(result).toMatch(/Option one/i);
     expect(result).toMatch(/And option two/i);
   });
+
+  it('handles Google Calendar normalized events where start is a plain ISO string', () => {
+    // Google Calendar service returns events with start: 'ISO string', not start: { dateTime: '...' }
+    const events = [
+      { title: 'Team standup', start: '2026-06-05T09:00:00Z', end: '2026-06-05T09:30:00Z' },
+      { title: 'Dentist', start: '2026-06-05T14:00:00Z', end: '2026-06-05T15:00:00Z' },
+    ];
+    const result = flattenOptionsToSpeech(events, 'events', 'UTC');
+
+    expect(result).toContain('Team standup');
+    expect(result).toContain('Dentist');
+    // Must include date info — not just silently drop it because start isn't an object
+    expect(result).toMatch(/Friday/i);   // 2026-06-05 is a Friday
+    expect(result).toMatch(/9:00 AM/i);
+    expect(result).toMatch(/2:00 PM/i);
+  });
+
+  it('disambiguates same-title events with distinct dates and times', () => {
+    // All three are titled "workout" but on different days — without date info they are indistinguishable
+    const events = [
+      { title: 'workout', start_time: '2026-06-02T09:00:00Z' },  // Tuesday
+      { title: 'workout', start_time: '2026-06-04T16:00:00Z' },  // Thursday
+      { title: 'workout', start_time: '2026-06-05T11:00:00Z' },  // Friday
+    ];
+    const result = flattenOptionsToSpeech(events, 'events', 'UTC');
+
+    expect(result).toMatch(/Option one/i);
+    expect(result).toMatch(/Option two/i);
+    expect(result).toMatch(/option three/i);
+    // Each option must include a weekday name so the user can distinguish them by ear
+    expect(result).toMatch(/Tuesday/i);
+    expect(result).toMatch(/Thursday/i);
+    expect(result).toMatch(/Friday/i);
+    // All options still include the shared title
+    const workoutCount = (result.match(/workout/gi) || []).length;
+    expect(workoutCount).toBeGreaterThanOrEqual(3);
+  });
 });

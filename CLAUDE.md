@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 4 complete (2026-06-04). All phases done: MVP, enhanced UX, agentic scheduling, and hands-free voice mode. 153 tests passing. Full feature list: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, goal-oriented free-slot finding, hands-free voice mode with continuous STT/TTS loop and session interceptors.
+**Status:** Phase 4 complete + post-launch bug fixes (2026-06-05). All phases done: MVP, enhanced UX, agentic scheduling, and hands-free voice mode. 205 tests passing. Full feature list: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, goal-oriented free-slot finding, hands-free voice mode with continuous STT/TTS loop and session interceptors. Voice agent confirmed working end-to-end: create, delete, update, and post-action exit flow.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -20,7 +20,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - **Node.js + Express** — REST API, session management, OAuth proxy
 - **express-session** — session management & server-side conversation state cache
 - **Passport.js** — Google OAuth 2.0 authentication
-- **Testing:** Jest + Supertest (153 tests passing)
+- **Testing:** Jest + Supertest (205 tests passing)
 
 ### AI & External Services
 - **Groq SDK (llama-3.3-70b-versatile)** — intent parsing, conflict resolution, rescheduling suggestions (free tier, 30 RPM). Model is configurable via `GROQ_MODEL` env var. Service abstracted as `AIService` — swap provider by editing `src/services/ai.js` only.
@@ -495,6 +495,22 @@ startLoop()
 
 **Query returning no results** — when AI sets `date_known: false` for "what's on my calendar today?" (non-deterministic), the old route guard `intent.date_known && intent.start_time` skipped the calendar fetch entirely, returning "Let me check your calendar…" with no results. Fixed: removed guard, always fetch, default to today when no date extracted.
 
+### Post-launch voice bug fixes (2026-06-05)
+
+**Brittle regex confirm/cancel** — `AFFIRMATION_RE`/`NEGATION_RE` failed on multi-word phrases like "yes yes" or "no, cancel". Fixed: replaced with LLM-based `classifyConfirmation(message)` (`AIService`) + `quickClassify()` single-token fast-path. Both paths return 'confirm', 'cancel', or 'other'.
+
+**Voice loop exiting after completed task** — `afterSpeak` was stopping the loop on `waitForInput: false`. Fixed: loop always continues; exits only on `EXIT_RE` phrase or new `exitLoop: true` audioMetadata flag.
+
+**"No" after task completion restarted intent parser** — saying "no" after "Is there anything else?" fell through to `computeParseResult`, returning the default "I can help you schedule…" reply. Fixed: `voiceAwaitingFollowup` session flag set after every completion; new interceptor (step 0) catches "no"/"exit"/"goodbye" and returns `exitLoop: true` + farewell. Frontend calls `stopLoop(); onClose?.()` on `exitLoop`.
+
+**`parseDayHint` ignoring "today"/"tomorrow"** — returning `null` for these strings caused day-scoped update candidate searches to fall back to a 7-day window. Fixed: explicit handling at the top of `parseDayHint`.
+
+**`computeUpdatePatches` missing `new_time`-only branch** — "move my workout to 3pm" (no new date, just a new time) produced empty patches and updated nothing. Fixed: `else if (intent.new_time)` branch applies `parseTimeHint(intent.new_time, candidateStart)` to change the time while preserving the event's date.
+
+**STT "p.m."/"a.m." format not recognized** — Chrome STT transcribes spoken "1 PM" as "1:00 p.m." (with periods). `parseTimeHint` regex matched only `am|pm`. Fixed: normalize `a.m.`/`p.m.` to `am`/`pm` before matching.
+
+**Voice delete confirmation loop** — after the bot said "Found X — Confirm deletion?", saying "yes" re-ran the entire delete search and asked again indefinitely. Root cause: `voiceDraftDeleteCandidate` session key did not exist; delete was the only action with `binary_affirmation` metadata that stored nothing in session. `hasPendingDraft` was always false for delete, so the pending-state handler never fired and "yes" fell through to the AI. Fixed: store `voiceDraftDeleteCandidate` when action=delete and exactly 1 candidate is found; pending-state handler calls `deleteEvent(candidate.id)` on confirm and sets `voiceAwaitingFollowup`.
+
 ---
 
 ### Phase 4 API
@@ -505,12 +521,22 @@ startLoop()
 ```
 [Incoming Voice Request]
    │
-   ├──> 1. Binary affirmation interceptor (AFFIRMATION_RE + voiceDraftIntent)
-   ├──> 2. Negation interceptor (NEGATION_RE + any pending session state)
-   ├──> 3. Option picker interceptor (parseOptionIndex + voiceActiveOptions)
-   ├──> 4. Normal fallthrough via computeParseResult(req)
-   ├──> 5. Store session state (voiceDraftIntent, voiceActiveOptions, voiceSlotContext)
-   └──> 6. Build vocal response (buildSpeechReply + buildAudioMetadata)
+   ├──> 0. Followup interceptor (voiceAwaitingFollowup + "no"/"exit" → exitLoop: true)
+   ├──> 1. Option picker interceptor (parseOptionIndex + voiceActiveOptions)
+   ├──> 2. Pending-state handler (classifyConfirmation LLM + quickClassify fast-path)
+   │        confirm + voiceDraftIntent         → createEvent, voiceAwaitingFollowup=true
+   │        confirm + voiceDraftUpdateProposal → updateEvent, voiceAwaitingFollowup=true
+   │        confirm + voiceDraftDeleteCandidate → deleteEvent, voiceAwaitingFollowup=true
+   │        cancel  → clear all state, clearHistory: true
+   │        other   → clear draft, fall through
+   ├──> 3. Normal fallthrough via computeParseResult(req)
+   ├──> 4. Store session state:
+   │        voiceDraftIntent          (create, ready)
+   │        voiceDraftUpdateProposal  (update with 1 candidate)
+   │        voiceDraftDeleteCandidate (delete with 1 candidate)
+   │        voiceActiveOptions        (slots | suggestions | update_candidates)
+   │        voiceAwaitingFollowup     (set by all completion paths)
+   └──> 5. Build vocal response (buildSpeechReply + buildAudioMetadata)
 ```
 
 **Response:**
@@ -648,4 +674,9 @@ nudge-app/
 - **`action === 'query'` always fetches calendar:** the route no longer gates on `date_known`; when the AI omits a date, it defaults to today. This prevents the "Let me check your calendar…" with no results bug caused by non-deterministic `date_known: false` outputs.
 - **Voice `continuous: true` + silence timer pattern:** `recognition.continuous = true` keeps the mic open; a 1500ms `setTimeout` fires `recognition.stop()` after speech goes quiet; `recognition.onend` then submits the accumulated transcript. `accumulatedFinal` collects all `isFinal` segments so pauses mid-sentence don't truncate. A 15s `maxListenTimer` caps each session.
 - **TTS fallback timer in `speakAndContinue`:** `setTimeout(afterSpeak, Math.max(2500, text.length * 65))` as insurance against Chrome's intermittent `utter.onend` non-fire. `afterSpeakCalled` boolean prevents double-execution.
-- **`NEGATION_RE` in `voice-parse`:** checked after affirmation but before option picker; only fires when session has pending state (`voiceDraftIntent` or `voiceActiveOptions`). Bare "cancel" with no pending state falls through to normal parse.
+- **`classifyConfirmation` in `AIService`:** lean LLM call (max_tokens: 5, temperature: 0) returning exactly "CONFIRM", "CANCEL", or "OTHER". `quickClassify()` fast-path skips it for single-token words. Used by pending-state handler in `voice-parse`.
+- **`voiceAwaitingFollowup` session flag:** set after every completed action (create/update/slot pick). Interceptor 0 in `voice-parse` catches "no"/"exit"/"goodbye" etc. and returns `exitLoop: true` + farewell; otherwise falls through to normal parse. Frontend calls `stopLoop(); onClose?.()` on `exitLoop`.
+- **`parseTimeHint` STT normalization:** strips `a.m.`/`p.m.` periods before regex match, so Chrome STT's "1:00 p.m." format parses correctly as 1pm.
+- **`parseDayHint` handles "today"/"tomorrow"/"yesterday":** checked at the top of the function before the generic date parser, so day-hint candidate searches correctly scope to a single day.
+- **`computeUpdatePatches` `new_time`-only branch:** `else if (intent.new_time)` applies `parseTimeHint(intent.new_time, candidateStart)` to change the time of day while keeping the candidate's existing date. Handles "move my workout to 3pm" with no date change.
+- **`voiceDraftDeleteCandidate` session key:** stored when action=delete returns exactly 1 candidate. Pending-state handler calls `calService.deleteEvent(candidate.id)` on confirm. All clear paths (cancel, other, followup interceptor) null it out. Without this, voice delete confirmation was an infinite loop — "yes" re-ran the search and asked again.

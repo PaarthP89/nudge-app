@@ -72,6 +72,7 @@ beforeEach(() => {
     chat: chatMock,
     suggestSlots: suggestSlotsMock,
     findFreeSlots: findFreeSlotsMock,
+    classifyConfirmation: jest.fn().mockResolvedValue('other'),
   }));
   AIService.buildIntentReply.mockReturnValue('Got it — mock reply');
   AIService._lastParseIntent = parseIntentMock;
@@ -91,7 +92,13 @@ beforeEach(() => {
       start: '2026-05-23T10:00:00Z', end: '2026-05-23T10:30:00Z',
       allDay: false, location: null, description: null,
       colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
-    })
+    }),
+    getEvent: jest.fn().mockResolvedValue({
+      id: 'default-getEvent', title: 'Team standup',
+      start: '2026-05-23T09:00:00Z', end: '2026-05-23T09:30:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    }),
   }));
 
   GmailService.mockImplementation(() => ({
@@ -1142,6 +1149,133 @@ describe('POST /api/assistant/parse — 3D event editing', () => {
     // june-5th workout must not be touched
     expect(res.body.candidates.every(c => c.id !== 'workout-jun5')).toBe(true);
   });
+
+  it('update with new_time in STT "p.m." format (e.g. "1:00 p.m.") applies time change correctly', async () => {
+    // STT transcribes spoken "1 PM" as "1:00 p.m." — parseTimeHint must handle periods in am/pm suffix
+    const WORKOUT_TODAY = {
+      id: 'ev-workout-stt', title: 'workout',
+      start: '2026-06-05T15:00:00Z', end: '2026-06-05T16:00:00Z', // 3pm UTC
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+
+    const sttIntent = {
+      action: 'update',
+      title: null,
+      title_hint: 'workout',
+      time_hint: null,
+      day_hint: 'today',
+      new_title: null,
+      new_date: null,
+      new_time: '1:00 p.m.',  // STT format — has periods
+      preserve_time: false,
+      duration_delta_minutes: null,
+      start_delta_minutes: null,
+      start_time: null,
+      end_time: null,
+      duration_minutes: 60,
+      attendees: [],
+      location: null,
+      confidence: 0.85,
+      date_known: true,
+      time_known: true,
+      recurrence: null,
+      target_period: null,
+      preferences: null,
+    };
+
+    const listEventsMock = jest.fn();
+    listEventsMock.mockResolvedValueOnce([WORKOUT_TODAY]);
+    listEventsMock.mockResolvedValue([]);
+
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(sttIntent),
+      chat: jest.fn().mockResolvedValue(sttIntent),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: listEventsMock,
+      updateEvent: jest.fn().mockResolvedValue(WORKOUT_TODAY),
+      getEvent: jest.fn().mockResolvedValue(WORKOUT_TODAY),
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'can you reschedule my workout today to start at 1:00 p.m. instead' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updateProposal).toBeDefined();
+    expect(res.body.updateProposal).not.toBeNull();
+    expect(res.body.updateProposal.candidate.id).toBe('ev-workout-stt');
+    // "1:00 p.m." must parse correctly and produce start/end patches
+    expect(res.body.updateProposal.patches.start).toBeDefined();
+    expect(res.body.updateProposal.patches.end).toBeDefined();
+    // Patched start must differ from the original 3pm
+    expect(res.body.updateProposal.after.start).not.toBe(WORKOUT_TODAY.start);
+  });
+
+  it('update with title_hint + day_hint:today + new_time only (no time_hint) — finds event whole-day and applies time change', async () => {
+    const WORKOUT_TODAY = {
+      id: 'ev-workout-today', title: 'workout',
+      start: '2026-06-05T16:00:00Z', end: '2026-06-05T17:00:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+
+    const moveToNewTimeIntent = {
+      action: 'update',
+      title: null,
+      title_hint: 'workout',
+      time_hint: null,
+      day_hint: 'today',
+      new_title: null,
+      new_date: null,
+      new_time: '3pm',
+      preserve_time: false,
+      duration_delta_minutes: null,
+      start_delta_minutes: null,
+      start_time: null,
+      end_time: null,
+      duration_minutes: 60,
+      attendees: [],
+      location: null,
+      confidence: 0.85,
+      date_known: false,
+      time_known: false,
+      recurrence: null,
+      target_period: null,
+      preferences: null,
+    };
+
+    const listEventsMock = jest.fn();
+    listEventsMock.mockResolvedValueOnce([WORKOUT_TODAY]);
+    listEventsMock.mockResolvedValue([]);
+
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(moveToNewTimeIntent),
+      chat: jest.fn().mockResolvedValue(moveToNewTimeIntent),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: listEventsMock,
+      updateEvent: jest.fn().mockResolvedValue(WORKOUT_TODAY),
+      getEvent: jest.fn().mockResolvedValue(WORKOUT_TODAY),
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'Can you move my workout today to start at 3pm instead?' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.updateProposal).toBeDefined();
+    expect(res.body.updateProposal).not.toBeNull();
+    expect(res.body.updateProposal.candidate.id).toBe('ev-workout-today');
+    // new_time: '3pm' must produce start/end patches
+    expect(res.body.updateProposal.patches.start).toBeDefined();
+    expect(res.body.updateProposal.patches.end).toBeDefined();
+    // Patched start must differ from the original 4pm
+    expect(res.body.updateProposal.after.start).not.toBe(WORKOUT_TODAY.start);
+  });
 });
 
 // ── 3C: find_slot (goal-oriented scheduling) ──────────────────────────────────
@@ -1262,6 +1396,77 @@ describe('POST /api/assistant/voice-parse — unauthenticated', () => {
 
 describe('POST /api/assistant/voice-parse — Phase 4 interceptors and fallthrough', () => {
   beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('delete with 1 candidate — "yes" executes deletion without re-invoking AI', async () => {
+    const deleteEvent = jest.fn().mockResolvedValue({});
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
+      chat: jest.fn().mockResolvedValue(DELETE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      classifyConfirmation: jest.fn().mockResolvedValue('other'),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT]),
+      deleteEvent,
+    }));
+
+    const agent = request.agent(app);
+
+    // Step 1: parse delete — voice bot finds the event and asks to confirm
+    const step1 = await agent.post('/api/assistant/voice-parse').send({ message: 'delete my standup tomorrow at 9am' });
+    expect(step1.body.audioMetadata.inputExpectation).toBe('binary_affirmation');
+
+    // Step 2: "yes" — must delete the event and NOT re-invoke AI
+    const parseIntentSpy = jest.fn();
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentSpy,
+      chat: parseIntentSpy,
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      classifyConfirmation: jest.fn().mockResolvedValue('other'),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      deleteEvent,
+    }));
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'yes' });
+
+    expect(res.status).toBe(200);
+    expect(parseIntentSpy).not.toHaveBeenCalled();
+    expect(deleteEvent).toHaveBeenCalledWith(EXISTING_EVENT.id);
+    expect(res.body.audioMetadata.waitForInput).toBe(false);
+    expect(res.body.speechReply).toMatch(/deleted/i);
+  });
+
+  it('delete with 1 candidate — "no" cancels without deleting', async () => {
+    const deleteEvent = jest.fn().mockResolvedValue({});
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
+      chat: jest.fn().mockResolvedValue(DELETE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      classifyConfirmation: jest.fn().mockResolvedValue('other'),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT]),
+      deleteEvent,
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'delete my standup tomorrow at 9am' });
+
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(DELETE_INTENT),
+      chat: jest.fn().mockResolvedValue(DELETE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      classifyConfirmation: jest.fn().mockResolvedValue('cancel'),
+    }));
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'no' });
+
+    expect(res.status).toBe(200);
+    expect(deleteEvent).not.toHaveBeenCalled();
+    expect(res.body.audioMetadata.inputExpectation).toBe('open_ended');
+  });
 
   it('Binary interceptor skips LLM and confirms active draft', async () => {
     const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
@@ -1385,5 +1590,1054 @@ describe('POST /api/assistant/voice-parse — Phase 4 interceptors and fallthrou
     // speechReply must contain no markdown
     expect(res.body.speechReply).not.toMatch(/\*\*/);
     expect(res.body.speechReply).not.toMatch(/\n/);
+  });
+
+  it('voice-parse routes history to AI chat service identically to text pipeline', async () => {
+    const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    const chatMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentMock,
+      chat: chatMock,
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    const history = [
+      { role: 'user', content: 'I need to schedule something' },
+      { role: 'assistant', content: 'What time works for you?' },
+    ];
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Tomorrow at 3pm', history, timezone: 'America/New_York' });
+
+    expect(res.status).toBe(200);
+    // chat() must be called (not parseIntent) because history was provided
+    expect(chatMock).toHaveBeenCalled();
+    expect(parseIntentMock).not.toHaveBeenCalled();
+    // Full history + new message must have been forwarded to chat
+    const chatArgs = chatMock.mock.calls[0][0];
+    expect(chatArgs).toHaveLength(3);
+    expect(chatArgs[2].role).toBe('user');
+    expect(chatArgs[2].content).toBe('Tomorrow at 3pm');
+  });
+
+  it('Yes interceptor confirms active update proposal without losing state', async () => {
+    const updateIntent = {
+      action: 'update',
+      title: null,
+      title_hint: 'standup',
+      time_hint: '9am',
+      day_hint: null,
+      new_title: null,
+      new_date: null,
+      new_time: null,
+      preserve_time: false,
+      duration_delta_minutes: null,
+      start_delta_minutes: 60,  // shift 1 hour forward
+      start_time: '2026-05-23T09:00:00Z',
+      end_time: null,
+      duration_minutes: 30,
+      attendees: [],
+      location: null,
+      confidence: 0.9,
+      date_known: true,
+      time_known: true,
+    };
+
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(updateIntent),
+      chat: jest.fn().mockResolvedValue(updateIntent),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    const updateEvent = jest.fn().mockResolvedValue({
+      id: 'ev-del-1', title: 'Team standup',
+      start: '2026-05-23T10:00:00Z', end: '2026-05-23T10:30:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    });
+
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT]),
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      updateEvent,
+      getEvent: jest.fn().mockResolvedValue(EXISTING_EVENT),
+    }));
+
+    const agent = request.agent(app);
+
+    // Step 1: get update proposal stored in session
+    const step1 = await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'move my standup to 10am' });
+    expect(step1.body.audioMetadata.inputExpectation).toBe('binary_affirmation');
+
+    // Swap parseIntent so we can prove it is NOT called on the "Yes" turn
+    const parseIntentSpy = jest.fn();
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentSpy,
+      chat: parseIntentSpy,
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT]),
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      updateEvent,
+      getEvent: jest.fn().mockResolvedValue(EXISTING_EVENT),
+    }));
+
+    // Step 2: confirm with Yes → must call updateEvent, not re-parse
+    const res = await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'Yes' });
+
+    expect(res.status).toBe(200);
+    expect(parseIntentSpy).not.toHaveBeenCalled();
+    expect(updateEvent).toHaveBeenCalled();
+    expect(res.body.speechReply).not.toMatch(/couldn't find/i);
+    expect(res.body.speechReply).toMatch(/updated|done/i);
+    expect(res.body.audioMetadata.inputExpectation).toBe('none');
+    expect(res.body.audioMetadata.waitForInput).toBe(false);
+  });
+
+  it('Option two resolves to second update candidate and returns update confirmation', async () => {
+    const CAND_A = {
+      id: 'cand-1', title: 'standup',
+      start: '2026-06-03T09:00:00Z', end: '2026-06-03T09:30:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+    const CAND_B = {
+      id: 'cand-2', title: 'standup',
+      start: '2026-06-04T14:00:00Z', end: '2026-06-04T14:30:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+    const CAND_C = {
+      id: 'cand-3', title: 'standup',
+      start: '2026-06-05T11:00:00Z', end: '2026-06-05T11:30:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+
+    const updateIntent = {
+      action: 'update',
+      title: 'standup',
+      title_hint: 'standup',
+      time_hint: null,
+      day_hint: null,
+      new_title: 'standup renamed',
+      new_date: null,
+      new_time: null,
+      preserve_time: false,
+      duration_delta_minutes: null,
+      start_delta_minutes: null,
+      start_time: null,
+      end_time: null,
+      duration_minutes: 30,
+      attendees: [],
+      location: null,
+      confidence: 0.9,
+      date_known: false,
+      time_known: false,
+    };
+
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(updateIntent),
+      chat: jest.fn().mockResolvedValue(updateIntent),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    const getEvent = jest.fn().mockResolvedValue(CAND_B);
+    const updateEvent = jest.fn().mockResolvedValue(CAND_B);
+
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CAND_A, CAND_B, CAND_C]),
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      updateEvent,
+      getEvent,
+    }));
+
+    const agent = request.agent(app);
+
+    // Step 1: multiple candidates → option_selection
+    const step1 = await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'rename my standup' });
+    expect(step1.status).toBe(200);
+    expect(step1.body.audioMetadata.inputExpectation).toBe('option_selection');
+
+    // Step 2: "Option two" → routes through fast-path using cand-2
+    const res = await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'Option two' });
+
+    expect(res.status).toBe(200);
+    // Must have fetched cand-2 specifically (fast-path)
+    expect(getEvent).toHaveBeenCalledWith('cand-2');
+    // Result must be binary_affirmation (update proposal ready to confirm)
+    expect(res.body.audioMetadata.inputExpectation).toBe('binary_affirmation');
+    expect(res.body.speechReply).not.toMatch(/couldn't find/i);
+  });
+});
+
+// ── Extended voice-parse coverage ────────────────────────────────────────────
+
+describe('POST /api/assistant/voice-parse — input validation', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('returns 400 when message is missing', async () => {
+    const res = await request(app).post('/api/assistant/voice-parse').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/message/);
+  });
+
+  it('returns 400 when message is whitespace only', async () => {
+    const res = await request(app).post('/api/assistant/voice-parse').send({ message: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when message exceeds 1000 characters', async () => {
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'a'.repeat(1001) });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/1000/);
+  });
+
+  it('propagates AI 429 rate-limit errors as 429 to the caller', async () => {
+    const err = new Error('Rate limit reached');
+    err.status = 429;
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockRejectedValue(err),
+      chat: jest.fn().mockRejectedValue(err),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'hello' });
+    expect(res.status).toBe(429);
+  });
+});
+
+describe('POST /api/assistant/voice-parse — affirmation interceptor variants', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  const CASUAL_WORDS = ['yep', 'sure', 'sounds good', 'go ahead', 'absolutely', 'ok', 'let\'s go'];
+
+  CASUAL_WORDS.forEach(word => {
+    it(`"${word}" triggers the create interceptor when a draft is pending`, async () => {
+      const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+      GoogleCalendarService.mockImplementation(() => ({
+        listEvents: jest.fn().mockResolvedValue([]),
+        createEvent,
+        getEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      }));
+      // classifyConfirmation needed for multi-word phrases like "sounds good", "go ahead", "let's go"
+      AIService.mockImplementation(() => ({
+        parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+        chat: jest.fn().mockResolvedValue(VALID_INTENT),
+        suggestSlots: jest.fn().mockResolvedValue([]),
+        classifyConfirmation: jest.fn().mockResolvedValue('confirm'),
+      }));
+
+      const agent = request.agent(app);
+      await agent.post('/api/assistant/voice-parse')
+        .send({ message: 'Schedule team standup tomorrow at 9am' });
+
+      const res = await agent.post('/api/assistant/voice-parse')
+        .send({ message: word });
+
+      expect(res.status).toBe(200);
+      expect(createEvent).toHaveBeenCalledTimes(1);
+      expect(res.body.audioMetadata.waitForInput).toBe(false);
+      expect(res.body.audioMetadata.inputExpectation).toBe('none');
+    });
+  });
+
+  it('"yes yes" triggers the create interceptor when a draft is pending', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      classifyConfirmation: jest.fn().mockResolvedValue('confirm'),
+    }));
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule team standup tomorrow at 9am' });
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'yes yes' });
+    expect(res.status).toBe(200);
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(res.body.audioMetadata.waitForInput).toBe(false);
+  });
+
+  it('"yes please" triggers the create interceptor when a draft is pending', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      classifyConfirmation: jest.fn().mockResolvedValue('confirm'),
+    }));
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule team standup tomorrow at 9am' });
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'yes please' });
+    expect(res.status).toBe(200);
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(res.body.audioMetadata.waitForInput).toBe(false);
+  });
+
+  it('"Yes" with no pending draft falls through to normal parse without error', async () => {
+    const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentMock,
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Yes' });
+    expect(res.status).toBe(200);
+    expect(parseIntentMock).toHaveBeenCalled();
+    expect(typeof res.body.speechReply).toBe('string');
+  });
+});
+
+describe('POST /api/assistant/voice-parse — negation interceptor edge cases', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('"no, cancel" triggers the negation interceptor when a draft is pending', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      classifyConfirmation: jest.fn().mockResolvedValue('cancel'),
+    }));
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule team standup tomorrow at 9am' });
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'no, cancel' });
+    expect(res.status).toBe(200);
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(res.body.speechReply).toMatch(/cancel/i);
+    expect(res.body.audioMetadata.inputExpectation).toBe('open_ended');
+  });
+
+  it('"no cancel" triggers the negation interceptor when a draft is pending', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      classifyConfirmation: jest.fn().mockResolvedValue('cancel'),
+    }));
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule team standup tomorrow at 9am' });
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'no cancel' });
+    expect(res.status).toBe(200);
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(res.body.speechReply).toMatch(/cancel/i);
+    expect(res.body.audioMetadata.inputExpectation).toBe('open_ended');
+  });
+
+  it('"No" with no pending state falls through to normal parse without triggering negation', async () => {
+    const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentMock,
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'No' });
+    expect(res.status).toBe(200);
+    expect(parseIntentMock).toHaveBeenCalled();
+    // Should not return the cancellation speech if there was nothing to cancel
+    expect(res.body.speechReply).not.toMatch(/cancelled that/i);
+  });
+
+  it('"nevermind" clears both voiceDraftUpdateProposal and voiceActiveOptions', async () => {
+    // Seed an update proposal in the session
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(UPDATE_INTENT),
+      chat: jest.fn().mockResolvedValue(UPDATE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT]),
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      updateEvent: jest.fn().mockResolvedValue(EXISTING_EVENT),
+      getEvent: jest.fn().mockResolvedValue(EXISTING_EVENT),
+    }));
+
+    const agent = request.agent(app);
+    // Step 1: get an update proposal
+    await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'move my standup to 10am' });
+
+    // Step 2: cancel it
+    const res = await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'nevermind' });
+    expect(res.status).toBe(200);
+    expect(res.body.speechReply).toMatch(/cancel/i);
+    expect(res.body.audioMetadata.inputExpectation).toBe('open_ended');
+
+    // Step 3: "Yes" now has nothing to confirm — falls through to parse
+    const parseIntentSpy = jest.fn().mockResolvedValue(VALID_INTENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentSpy,
+      chat: parseIntentSpy,
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    const updateEvent = jest.fn().mockResolvedValue(EXISTING_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      updateEvent,
+      getEvent: jest.fn().mockResolvedValue(EXISTING_EVENT),
+    }));
+
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+    expect(updateEvent).not.toHaveBeenCalled();
+    expect(parseIntentSpy).toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/assistant/voice-parse — option picker edge cases', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('out-of-range index returns graceful "I don\'t have that option" message', async () => {
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue(MOCK_FREE_SLOTS),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'find me a 2-hour block tomorrow' });
+
+    // Only 3 options exist; "option four" is out of range
+    const res = await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'Option four' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.speechReply).toMatch(/don.t have/i);
+    expect(res.body.audioMetadata.inputExpectation).toBe('option_selection');
+  });
+
+  it('numeral "2" selects the second slot option', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue(MOCK_FREE_SLOTS),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'find me time tomorrow' });
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: '2' });
+
+    expect(res.status).toBe(200);
+    expect(createEvent).toHaveBeenCalled();
+    expect(createEvent.mock.calls[0][0].start_time).toBe(MOCK_FREE_SLOTS[1].start_time);
+  });
+
+  it('"the first one" selects index 0', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue(MOCK_FREE_SLOTS),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'find me a block' });
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'the first one' });
+
+    expect(res.status).toBe(200);
+    expect(createEvent).toHaveBeenCalled();
+    expect(createEvent.mock.calls[0][0].start_time).toBe(MOCK_FREE_SLOTS[0].start_time);
+  });
+
+  it('"option one" with no voiceActiveOptions falls through to normal parse', async () => {
+    const parseIntentMock = jest.fn().mockResolvedValue(VALID_INTENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentMock,
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    // Fresh session — no active options
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'option one' });
+    expect(res.status).toBe(200);
+    expect(parseIntentMock).toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/assistant/voice-parse — session lifecycle', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('session is cleared after create confirmation — second "Yes" falls through to parse', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule standup tomorrow at 9am' });
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+    expect(createEvent).toHaveBeenCalledTimes(1);
+
+    // Swap in a spy to prove the second "Yes" hits the LLM (no draft left)
+    const parseIntentSpy = jest.fn().mockResolvedValue(VALID_INTENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentSpy,
+      chat: parseIntentSpy,
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    createEvent.mockClear();
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+    expect(res.status).toBe(200);
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(parseIntentSpy).toHaveBeenCalled();
+  });
+
+  it('session is fully cleared after negation — subsequent "Yes" falls through', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule standup tomorrow at 9am' });
+    await agent.post('/api/assistant/voice-parse').send({ message: 'No' });
+
+    const parseIntentSpy = jest.fn().mockResolvedValue(VALID_INTENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentSpy,
+      chat: parseIntentSpy,
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+    expect(res.status).toBe(200);
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(parseIntentSpy).toHaveBeenCalled();
+  });
+
+  it('slot option selection clears voiceActiveOptions and voiceSlotContext', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue(MOCK_FREE_SLOTS),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'find me a block tomorrow' });
+    await agent.post('/api/assistant/voice-parse').send({ message: 'option one' });
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    createEvent.mockClear();
+
+    // Another "option one" now: no active options left, falls through to LLM
+    const parseIntentSpy = jest.fn().mockResolvedValue(VALID_INTENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentSpy,
+      chat: parseIntentSpy,
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    await agent.post('/api/assistant/voice-parse').send({ message: 'option one' });
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(parseIntentSpy).toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/assistant/voice-parse — voiceDraftIntent gate conditions', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('voiceDraftIntent is NOT stored when create intent has conflicts', async () => {
+    // Conflict present → binary interceptor must not fire on the next "Yes"
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT]),
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    const step1 = await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'Schedule standup at 9am' });
+    // Conflicts present → the parse path routes to suggestions or open_ended, not binary_affirmation for a clean create
+    expect(step1.body.audioMetadata.inputExpectation).not.toBe('binary_affirmation');
+
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it('voiceDraftIntent is NOT stored when confidence is below 0.5', async () => {
+    const lowConfidence = { ...VALID_INTENT, confidence: 0.3 };
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(lowConfidence),
+      chat: jest.fn().mockResolvedValue(lowConfidence),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'maybe do something tomorrow' });
+
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it('voiceDraftIntent is NOT stored when title is missing', async () => {
+    const noTitle = { ...VALID_INTENT, title: null };
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(noTitle),
+      chat: jest.fn().mockResolvedValue(noTitle),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'schedule something tomorrow at 9am' });
+
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/assistant/voice-parse — audio metadata correctness', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('batchPlan returns binary_affirmation — user must confirm the whole batch', async () => {
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(BATCH_INTENT),
+      chat: jest.fn().mockResolvedValue(BATCH_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      expandRecurrence: jest.fn().mockResolvedValue(BATCH_INSTANCES),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'schedule standup every weekday this week' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.audioMetadata.inputExpectation).toBe('binary_affirmation');
+  });
+
+  it('conflicts + suggestions returns option_selection', async () => {
+    const mockSuggestions = [
+      { start_time: '2026-05-23T10:00:00Z', end_time: '2026-05-23T10:30:00Z', label: '10 AM' },
+      { start_time: '2026-05-23T11:00:00Z', end_time: '2026-05-23T11:30:00Z', label: '11 AM' },
+    ];
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue(mockSuggestions),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Schedule standup at 9am' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.audioMetadata.inputExpectation).toBe('option_selection');
+    // Speech must verbalize the options
+    expect(res.body.speechReply).toMatch(/Option one/i);
+    expect(res.body.speechReply).toMatch(/Option two/i);
+  });
+
+  it('create intent with incomplete info returns open_ended', async () => {
+    const partial = { ...VALID_INTENT, time_known: false, date_known: false };
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(partial),
+      chat: jest.fn().mockResolvedValue(partial),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'schedule something' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.audioMetadata.inputExpectation).toBe('open_ended');
+  });
+});
+
+describe('POST /api/assistant/voice-parse — suggestions option picker', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('picks conflict suggestion by spoken index and creates event at that slot', async () => {
+    const mockSuggestions = [
+      { start_time: '2026-05-23T10:00:00Z', end_time: '2026-05-23T10:30:00Z', label: '10 AM' },
+      { start_time: '2026-05-23T11:00:00Z', end_time: '2026-05-23T11:30:00Z', label: '11 AM' },
+    ];
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue(mockSuggestions),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT]),
+      createEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule standup at 9am' });
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'option two' });
+
+    expect(res.status).toBe(200);
+    expect(createEvent).toHaveBeenCalled();
+    expect(createEvent.mock.calls[0][0].start_time).toBe('2026-05-23T11:00:00Z');
+    expect(res.body.audioMetadata.waitForInput).toBe(false);
+    expect(res.body.audioMetadata.inputExpectation).toBe('none');
+  });
+
+  it('suggestions speech reply includes dates (not just times) for disambiguation', async () => {
+    const mockSuggestions = [
+      { start_time: '2026-06-02T10:00:00Z', end_time: '2026-06-02T10:30:00Z', label: 'Tuesday 10 AM' },
+      { start_time: '2026-06-04T14:00:00Z', end_time: '2026-06-04T14:30:00Z', label: 'Thursday 2 PM' },
+    ];
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(VALID_INTENT),
+      chat: jest.fn().mockResolvedValue(VALID_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue(mockSuggestions),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([CONFLICT_EVENT])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'Schedule standup at 9am', timezone: 'UTC' });
+
+    expect(res.status).toBe(200);
+    // Suggestions must include weekday names so user can distinguish Tuesday from Thursday by ear
+    expect(res.body.speechReply).toMatch(/Tuesday/i);
+    expect(res.body.speechReply).toMatch(/Thursday/i);
+  });
+});
+
+describe('POST /api/assistant/voice-parse — update proposal guard', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('voiceDraftUpdateProposal is NOT stored when no candidates found for update', async () => {
+    const updateNoMatch = { ...UPDATE_INTENT, title_hint: 'nonexistent event xyz' };
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(updateNoMatch),
+      chat: jest.fn().mockResolvedValue(updateNoMatch),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      updateEvent: jest.fn().mockResolvedValue(EXISTING_EVENT),
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    const agent = request.agent(app);
+    const step1 = await agent.post('/api/assistant/voice-parse')
+      .send({ message: 'move my nonexistent event' });
+    expect(step1.body.speechReply).toMatch(/couldn't find/i);
+
+    // "Yes" with no proposal stored must NOT call updateEvent
+    const updateEvent = jest.fn().mockResolvedValue(EXISTING_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent: jest.fn().mockResolvedValue(CREATED_EVENT),
+      updateEvent,
+      getEvent: jest.fn().mockResolvedValue(null),
+    }));
+
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+    expect(updateEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/assistant/voice-parse — speech reply quality', () => {
+  beforeEach(() => { mockIsAuthenticated = true; });
+
+  it('speechReply strips all markdown — no **, *, bullets, or newlines', async () => {
+    AIService.buildIntentReply.mockReturnValue('**Schedule confirmed!** Here\'s what I found:\n- Event one\n- Event two\n> Note: check calendar');
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'unknown', date_known: false, start_time: null }),
+      chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'unknown', date_known: false, start_time: null }),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'hello' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.speechReply).not.toMatch(/\*\*/);
+    expect(res.body.speechReply).not.toMatch(/\*/);
+    expect(res.body.speechReply).not.toMatch(/\n/);
+    expect(res.body.speechReply).not.toMatch(/^[-*]\s/m);
+    expect(res.body.speechReply).not.toMatch(/^>/m);
+    // Underlying text content should survive
+    expect(res.body.speechReply).toContain('Schedule confirmed');
+  });
+
+  it('queryResults speech verbalization includes event titles and dates', async () => {
+    const queryEvent1 = {
+      id: 'qev-1', title: 'Team lunch',
+      start: '2026-06-05T12:00:00Z', end: '2026-06-05T13:00:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+    const queryEvent2 = {
+      id: 'qev-2', title: 'Weekly review',
+      start: '2026-06-05T15:00:00Z', end: '2026-06-05T16:00:00Z',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'query' }),
+      chat: jest.fn().mockResolvedValue({ ...VALID_INTENT, action: 'query' }),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([queryEvent1, queryEvent2])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: "What's on my calendar today?", timezone: 'UTC' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.speechReply).toContain('Team lunch');
+    expect(res.body.speechReply).toContain('Weekly review');
+    // Must include a weekday name (2026-06-05 is Friday) so user knows when each event is
+    expect(res.body.speechReply).toMatch(/Friday/i);
+    expect(res.body.speechReply).toMatch(/Option one/i);
+  });
+
+  it('slotOptions speech reply includes full date for disambiguation across days', async () => {
+    const multiDaySlots = [
+      { start_time: '2026-06-02T09:00:00Z', end_time: '2026-06-02T11:00:00Z', score: 90, label: 'Tuesday morning' },
+      { start_time: '2026-06-04T14:00:00Z', end_time: '2026-06-04T16:00:00Z', score: 70, label: 'Thursday afternoon' },
+    ];
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      chat: jest.fn().mockResolvedValue(FIND_SLOT_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      findFreeSlots: jest.fn().mockResolvedValue(multiDaySlots),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'find me a 2-hour block this week', timezone: 'UTC' });
+
+    expect(res.status).toBe(200);
+    // Options on different days must verbalize weekday names to disambiguate
+    expect(res.body.speechReply).toMatch(/Tuesday/i);
+    expect(res.body.speechReply).toMatch(/Thursday/i);
+  });
+
+  it('ready create intent — speechReply is a complete confirmation question, not a transitional phrase', async () => {
+    AIService.buildIntentReply.mockReturnValue('Got it — scheduling Team standup. Checking for conflicts now!');
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'schedule team standup at 9am tomorrow', timezone: 'UTC' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.audioMetadata.inputExpectation).toBe('binary_affirmation');
+    expect(res.body.speechReply).toContain('Team standup');
+    expect(res.body.speechReply).toMatch(/should I go ahead/i);
+    expect(res.body.speechReply).not.toMatch(/checking for conflicts/i);
+  });
+
+  it('updateProposal — speechReply describes the change and asks for confirmation', async () => {
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(UPDATE_INTENT),
+      chat: jest.fn().mockResolvedValue(UPDATE_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([EXISTING_EVENT]),
+      updateEvent: jest.fn().mockResolvedValue(EXISTING_EVENT),
+      getEvent: jest.fn().mockResolvedValue(EXISTING_EVENT),
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'move my standup to 11am', timezone: 'UTC' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.audioMetadata.inputExpectation).toBe('binary_affirmation');
+    expect(res.body.speechReply).toContain('Team standup');
+    expect(res.body.speechReply).toMatch(/should I go ahead/i);
+  });
+
+  it('batchPlan — speechReply states the count and asks for confirmation', async () => {
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(BATCH_INTENT),
+      chat: jest.fn().mockResolvedValue(BATCH_INTENT),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+      expandRecurrence: jest.fn().mockResolvedValue(BATCH_INSTANCES),
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([])
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/voice-parse')
+      .send({ message: 'schedule standup every weekday this week', timezone: 'UTC' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.audioMetadata.inputExpectation).toBe('binary_affirmation');
+    expect(res.body.speechReply).toContain('standup');
+    expect(res.body.speechReply).toMatch(/5/);
+    expect(res.body.speechReply).toMatch(/should I go ahead/i);
+  });
+
+  it('after completed action, "no" returns exitLoop:true and does not invoke AI', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+
+    const agent = request.agent(app);
+
+    // Step 1: seed session draft
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule team standup tomorrow at 9am' });
+
+    // Step 2: confirm — sets voiceAwaitingFollowup
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+
+    // Step 3: "no" after "Is there anything else?" — should exit
+    const parseIntentSpy = jest.fn();
+    AIService.mockImplementation(() => ({
+      parseIntent: parseIntentSpy,
+      chat: parseIntentSpy,
+      classifyConfirmation: jest.fn().mockResolvedValue('other'),
+      suggestSlots: jest.fn().mockResolvedValue([]),
+    }));
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'no' });
+
+    expect(res.status).toBe(200);
+    expect(parseIntentSpy).not.toHaveBeenCalled();
+    expect(res.body.audioMetadata.exitLoop).toBe(true);
+    expect(res.body.audioMetadata.waitForInput).toBe(false);
+  });
+
+  it('after completed action, "no thank you" also returns exitLoop:true', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule team standup tomorrow at 9am' });
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'no thank you' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.audioMetadata.exitLoop).toBe(true);
+  });
+
+  it('after completed action, "yes" falls through to normal parse (not an exit)', async () => {
+    const createEvent = jest.fn().mockResolvedValue(CREATED_EVENT);
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: jest.fn().mockResolvedValue([]),
+      createEvent,
+    }));
+
+    const agent = request.agent(app);
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Schedule team standup tomorrow at 9am' });
+    await agent.post('/api/assistant/voice-parse').send({ message: 'Yes' });
+
+    const res = await agent.post('/api/assistant/voice-parse').send({ message: 'yes actually schedule another one' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.audioMetadata.exitLoop).toBeFalsy();
   });
 });

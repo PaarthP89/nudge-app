@@ -3,7 +3,7 @@ const requireAuth = require('../middleware/requireAuth');
 const AIService = require('../services/ai');
 const GoogleCalendarService = require('../services/googleCalendar');
 const GmailService = require('../services/gmail');
-const { stripMarkdown, flattenOptionsToSpeech } = require('../services/speechUtils');
+const { stripMarkdown, normalizeVocalDate, flattenOptionsToSpeech } = require('../services/speechUtils');
 const { detectConflicts } = GoogleCalendarService;
 
 const router = express.Router();
@@ -12,6 +12,25 @@ router.use(requireAuth);
 function parseDayHint(hint, now = new Date()) {
   if (!hint || typeof hint !== 'string') return null;
   const s = hint.trim().replace(/(\d+)(st|nd|rd|th)\b/gi, '$1');
+
+  const lower = s.toLowerCase();
+  if (lower === 'today') {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+  if (lower === 'tomorrow') {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 1);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+  if (lower === 'yesterday') {
+    const d = new Date(now);
+    d.setDate(d.getDate() - 1);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
 
   const withYear = `${s} ${now.getFullYear()}`;
   let d = new Date(withYear);
@@ -35,7 +54,9 @@ function parseDayHint(hint, now = new Date()) {
 
 function parseTimeHint(hint, refDate = new Date()) {
   if (!hint) return null;
-  const m = hint.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  // Normalize STT-style "a.m." / "p.m." (with periods) to "am" / "pm"
+  const normalized = hint.trim().replace(/\ba\.m\./gi, 'am').replace(/\bp\.m\./gi, 'pm');
+  const m = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
   if (!m) return null;
   let h = parseInt(m[1]);
   const mins = parseInt(m[2] || '0');
@@ -93,6 +114,13 @@ function computeUpdatePatches(candidate, intent) {
       );
     }
     timeChanged = true;
+  } else if (intent.new_time) {
+    // Time-only change — keep the candidate's date, apply the new time of day
+    const destTime = parseTimeHint(intent.new_time, candidateStart);
+    if (destTime) {
+      newStart = destTime;
+      timeChanged = true;
+    }
   }
 
   let newEnd = new Date(newStart.getTime() + durationMs);
@@ -148,19 +176,72 @@ const AFFIRMATION_RE = /^(yes|yep|yeah|yup|sure|okay|ok|go ahead|confirm|do it|s
 
 function parseOptionIndex(msg) {
   const lc = msg.toLowerCase().trim();
-  const ordinals = { one: 0, first: 0, '1': 0, two: 1, second: 1, '2': 1, three: 2, third: 2, '3': 2 };
-  const m = lc.match(/(?:option|number)\s+(one|two|three|1|2|3)|the\s+(first|second|third)\s+one|^(1|2|3)$/);
+  const ordinals = {
+    one: 0, first: 0, '1': 0,
+    two: 1, second: 1, '2': 1,
+    three: 2, third: 2, '3': 2,
+    four: 3, fourth: 3, '4': 3,
+    five: 4, fifth: 4, '5': 4,
+  };
+  const m = lc.match(/(?:option|number)\s+(one|two|three|four|five|1|2|3|4|5)|the\s+(first|second|third|fourth|fifth)\s+one|^(1|2|3|4|5)$/);
   if (!m) return -1;
   const word = m[1] || m[2] || m[3];
   return ordinals[word] ?? -1;
 }
 
-function buildSpeechReply(parseResult) {
-  const { reply, slotOptions, queryResults, candidates, suggestions } = parseResult;
-  if (slotOptions?.slots?.length > 0) return flattenOptionsToSpeech(slotOptions.slots, 'slots');
-  if (queryResults?.length > 0) return flattenOptionsToSpeech(queryResults, 'events');
-  if (candidates?.length > 1) return flattenOptionsToSpeech(candidates, 'events');
-  if (suggestions?.length > 0) return flattenOptionsToSpeech(suggestions, 'slots');
+function buildSpeechReply(parseResult, timezone = 'UTC') {
+  const { intent, reply, slotOptions, queryResults, candidates, suggestions, updateProposal, batchPlan, conflicts } = parseResult;
+
+  // option_selection types — verbalize as numbered choices
+  if (slotOptions?.slots?.length > 0) return flattenOptionsToSpeech(slotOptions.slots, 'slots', timezone);
+  if (queryResults?.length > 0) return flattenOptionsToSpeech(queryResults, 'events', timezone);
+  if (candidates?.length > 1) return flattenOptionsToSpeech(candidates, 'events', timezone);
+  if (suggestions?.length > 0) return flattenOptionsToSpeech(suggestions, 'slots', timezone);
+
+  // binary_affirmation: update — describe the change and ask
+  if (updateProposal) {
+    const { after, candidate } = updateProposal;
+    const title = candidate?.title || after?.title || 'the event';
+    if (after?.start) {
+      try {
+        const newDate = normalizeVocalDate(after.start, timezone);
+        return `I'll update ${title} to ${newDate}. Should I go ahead?`;
+      } catch (_) {}
+    }
+    return `Ready to update ${title}. Should I go ahead?`;
+  }
+
+  // binary_affirmation: batch — state count and ask
+  if (batchPlan) {
+    const instances = batchPlan.instances || [];
+    const count = instances.length;
+    const conflictCount = instances.filter(i => i.conflicts?.length > 0).length;
+    const title = instances[0]?.title || 'events';
+    if (conflictCount > 0) {
+      const cleanCount = count - conflictCount;
+      return `Ready to create ${cleanCount} of ${count} ${title} events — ${conflictCount} have conflicts. Should I go ahead?`;
+    }
+    return `Ready to create ${count} ${title} events. Should I go ahead?`;
+  }
+
+  // binary_affirmation: ready create intent with no conflicts — ask a proper question
+  if (
+    intent?.action === 'create' &&
+    intent?.date_known &&
+    intent?.time_known &&
+    intent?.title &&
+    (intent?.confidence || 0) >= 0.5 &&
+    !conflicts?.length
+  ) {
+    if (intent.start_time) {
+      try {
+        const dateStr = normalizeVocalDate(intent.start_time, timezone);
+        return `Got it. I'll schedule ${intent.title} on ${dateStr}. Should I go ahead?`;
+      } catch (_) {}
+    }
+    return `Got it. I'll schedule ${intent.title}. Should I go ahead?`;
+  }
+
   return stripMarkdown(reply);
 }
 
@@ -602,40 +683,41 @@ router.post('/chat', runParse);
 
 // ── POST /api/assistant/voice-parse ───────────────────────────────────────────
 
+// Single-token shortcuts — skip the LLM for unambiguous one-word responses
+const QUICK_CONFIRM = new Set(['yes', 'yep', 'yeah', 'sure', 'ok', 'okay', 'confirm', 'correct', 'right', 'great', 'perfect', 'absolutely']);
+const QUICK_CANCEL  = new Set(['no', 'nope', 'cancel', 'nevermind']);
+
+function quickClassify(msg) {
+  const w = msg.toLowerCase().trim().replace(/[.!?,]+$/, '');
+  if (QUICK_CONFIRM.has(w)) return 'confirm';
+  if (QUICK_CANCEL.has(w)) return 'cancel';
+  return null;
+}
+
+const FOLLOWUP_DONE_RE = /^no\b|^(exit|goodbye|bye|done|that'?s\s+(it|all)|i'?m\s+done)\b/i;
+
 router.post('/voice-parse', async (req, res, next) => {
   try {
     const message = validateMessage(req, res);
     if (!message) return;
 
-    // 1. Binary confirmation interceptor — skip LLM when user says yes to a pending draft
-    if (AFFIRMATION_RE.test(message) && req.session.voiceDraftIntent) {
-      const draftIntent = req.session.voiceDraftIntent;
-      const { accessToken, refreshToken } = req.user;
-      const calService = new GoogleCalendarService(accessToken, refreshToken);
-      const event = await calService.createEvent(draftIntent);
-      req.session.voiceDraftIntent = null;
-      req.session.voiceActiveOptions = null;
-      return res.json({
-        speechReply: `Done! I've scheduled "${event.title}". Is there anything else?`,
-        rawIntent: draftIntent,
-        audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
-      });
+    const timezone = (typeof req.body.timezone === 'string') ? req.body.timezone : 'UTC';
+
+    // 0. Followup interceptor — fires after a completed action when the bot asked "Is there anything else?"
+    if (req.session.voiceAwaitingFollowup) {
+      req.session.voiceAwaitingFollowup = false;
+      const quick = quickClassify(message);
+      if (quick === 'cancel' || FOLLOWUP_DONE_RE.test(message)) {
+        return res.json({
+          speechReply: "Alright! Have a great day.",
+          rawIntent: null,
+          audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false, exitLoop: true }
+        });
+      }
+      // else: user has another request — fall through to normal parse
     }
 
-    // 2. Negation interceptor — clear pending state when user says no/cancel
-    const NEGATION_RE = /^(no|nope|cancel|forget it|never ?mind|nevermind|abort|scratch that|stop that|don'?t)[.!]?$/i;
-    if (NEGATION_RE.test(message) && (req.session.voiceDraftIntent || req.session.voiceActiveOptions)) {
-      req.session.voiceDraftIntent = null;
-      req.session.voiceActiveOptions = null;
-      req.session.voiceSlotContext = null;
-      return res.json({
-        speechReply: "Okay, I've cancelled that. What else can I help you with?",
-        rawIntent: null,
-        audioMetadata: { waitForInput: true, inputExpectation: 'open_ended', clearToListen: true }
-      });
-    }
-
-    // 3. Option picker interceptor — resolve cached slot/suggestion by spoken index
+    // 1. Option picker — structured spoken-index pattern; no LLM needed
     const optionIdx = parseOptionIndex(message);
     if (optionIdx !== -1 && req.session.voiceActiveOptions) {
       const { type, items } = req.session.voiceActiveOptions;
@@ -667,8 +749,9 @@ router.post('/voice-parse', async (req, res, next) => {
         const event = await calService.createEvent(intent);
         req.session.voiceActiveOptions = null;
         req.session.voiceSlotContext = null;
+        req.session.voiceAwaitingFollowup = true;
         return res.json({
-          speechReply: `Done! I've scheduled "${event.title}".`,
+          speechReply: `Done! I've scheduled "${event.title}". Is there anything else?`,
           rawIntent: intent,
           audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
         });
@@ -680,16 +763,137 @@ router.post('/voice-parse', async (req, res, next) => {
         const event = await calService.createEvent(intent);
         req.session.voiceDraftIntent = null;
         req.session.voiceActiveOptions = null;
+        req.session.voiceAwaitingFollowup = true;
         return res.json({
-          speechReply: `Done! I've scheduled "${event.title}".`,
+          speechReply: `Done! I've scheduled "${event.title}". Is there anything else?`,
           rawIntent: intent,
           audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
         });
       }
+
+      if (type === 'update_candidates') {
+        const savedIntent = req.session.voiceDraftUpdateIntent;
+        if (!savedIntent) {
+          req.session.voiceActiveOptions = null;
+          return res.json({
+            speechReply: "Sorry, I lost track of what you wanted to update. Can you describe the change again?",
+            rawIntent: null,
+            audioMetadata: { waitForInput: true, inputExpectation: 'open_ended', clearToListen: true }
+          });
+        }
+        // Run the fast-path: forcedIntent + candidateId bypasses AI re-parsing and re-search
+        req.body.forcedIntent = savedIntent;
+        req.body.candidateId = selected.id;
+        const fastResult = await computeParseResult(req);
+        delete req.body.forcedIntent;
+        delete req.body.candidateId;
+
+        req.session.voiceActiveOptions = null;
+        req.session.voiceDraftUpdateIntent = null;
+        if (fastResult.updateProposal) {
+          req.session.voiceDraftUpdateProposal = fastResult.updateProposal;
+        }
+        return res.json({
+          speechReply: buildSpeechReply(fastResult, timezone),
+          rawIntent: fastResult.intent,
+          audioMetadata: buildAudioMetadata(fastResult),
+        });
+      }
     }
 
-    // 4. Normal fallthrough — run standard parse logic
+    // 2. Pending-state handler — when a draft or option set is waiting for user input,
+    //    use the LLM to classify intent (handles any natural-language confirm/cancel).
+    //    Quick single-token check first to avoid unnecessary API round-trips.
+    const hasPendingDraft = req.session.voiceDraftIntent || req.session.voiceDraftUpdateProposal || req.session.voiceDraftDeleteCandidate;
+    const hasPendingState = hasPendingDraft || req.session.voiceActiveOptions;
+
+    if (hasPendingState) {
+      const aiService = new AIService();
+      let classification = quickClassify(message);
+      if (!classification) {
+        classification = await aiService.classifyConfirmation(message);
+      }
+
+      if (classification === 'confirm' && hasPendingDraft) {
+        const { accessToken, refreshToken } = req.user;
+        const calService = new GoogleCalendarService(accessToken, refreshToken);
+
+        if (req.session.voiceDraftIntent) {
+          const draftIntent = req.session.voiceDraftIntent;
+          const event = await calService.createEvent(draftIntent);
+          req.session.voiceDraftIntent = null;
+          req.session.voiceActiveOptions = null;
+          req.session.voiceDraftUpdateProposal = null;
+          req.session.voiceAwaitingFollowup = true;
+          return res.json({
+            speechReply: `Done! I've scheduled "${event.title}". Is there anything else?`,
+            rawIntent: draftIntent,
+            audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
+          });
+        }
+
+        if (req.session.voiceDraftUpdateProposal) {
+          const proposal = req.session.voiceDraftUpdateProposal;
+          await calService.updateEvent(proposal.candidate.id, proposal.patches);
+          req.session.voiceDraftUpdateProposal = null;
+          req.session.voiceActiveOptions = null;
+          req.session.voiceDraftIntent = null;
+          req.session.voiceDraftUpdateIntent = null;
+          req.session.voiceAwaitingFollowup = true;
+          return res.json({
+            speechReply: `Done! I've updated "${proposal.candidate.title}". Is there anything else?`,
+            rawIntent: null,
+            audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
+          });
+        }
+
+        if (req.session.voiceDraftDeleteCandidate) {
+          const candidate = req.session.voiceDraftDeleteCandidate;
+          await calService.deleteEvent(candidate.id);
+          req.session.voiceDraftDeleteCandidate = null;
+          req.session.voiceActiveOptions = null;
+          req.session.voiceDraftIntent = null;
+          req.session.voiceAwaitingFollowup = true;
+          return res.json({
+            speechReply: `Done! I've deleted "${candidate.title}". Is there anything else?`,
+            rawIntent: null,
+            audioMetadata: { waitForInput: false, inputExpectation: 'none', clearToListen: false }
+          });
+        }
+      }
+
+      if (classification === 'cancel') {
+        req.session.voiceDraftIntent = null;
+        req.session.voiceActiveOptions = null;
+        req.session.voiceSlotContext = null;
+        req.session.voiceDraftUpdateProposal = null;
+        req.session.voiceDraftUpdateIntent = null;
+        req.session.voiceDraftDeleteCandidate = null;
+        return res.json({
+          speechReply: "Okay, cancelled. What would you like to do?",
+          rawIntent: null,
+          audioMetadata: { waitForInput: true, inputExpectation: 'open_ended', clearToListen: true, clearHistory: true }
+        });
+      }
+
+      // 'other' or 'confirm' with no matching draft — treat as a new request.
+      // Clear draft so the confirm loop doesn't persist across turns.
+      req.session.voiceDraftIntent = null;
+      req.session.voiceDraftUpdateProposal = null;
+      req.session.voiceDraftUpdateIntent = null;
+      req.session.voiceDraftDeleteCandidate = null;
+      // voiceActiveOptions left intact — context for normal parse
+    }
+
+    // 3. Normal fallthrough — run standard parse logic
     const parseResult = await computeParseResult(req);
+
+    // 4. Store delete candidate for single-event deletion confirmation
+    if (parseResult.intent?.action === 'delete' && parseResult.candidates?.length === 1) {
+      req.session.voiceDraftDeleteCandidate = parseResult.candidates[0];
+    } else {
+      req.session.voiceDraftDeleteCandidate = null;
+    }
 
     // 5. Store state for future interceptors on this session
     const intentReady = parseResult.intent?.action === 'create' &&
@@ -701,6 +905,9 @@ router.post('/voice-parse', async (req, res, next) => {
       !parseResult.batchPlan;
     req.session.voiceDraftIntent = intentReady ? parseResult.intent : null;
 
+    // Store update proposal for binary affirmation on next "yes"
+    req.session.voiceDraftUpdateProposal = parseResult.updateProposal || null;
+
     if (parseResult.slotOptions?.slots?.length > 0) {
       req.session.voiceActiveOptions = { type: 'slots', items: parseResult.slotOptions.slots };
       req.session.voiceSlotContext = {
@@ -710,6 +917,11 @@ router.post('/voice-parse', async (req, res, next) => {
       };
     } else if (parseResult.suggestions?.length > 0) {
       req.session.voiceActiveOptions = { type: 'suggestions', items: parseResult.suggestions };
+      req.session.voiceSlotContext = null;
+    } else if (parseResult.candidates?.length > 1 && parseResult.intent?.action === 'update') {
+      req.session.voiceActiveOptions = { type: 'update_candidates', items: parseResult.candidates };
+      req.session.voiceDraftUpdateIntent = parseResult.intent;
+      req.session.voiceSlotContext = null;
     } else {
       req.session.voiceActiveOptions = null;
       req.session.voiceSlotContext = null;
@@ -717,7 +929,7 @@ router.post('/voice-parse', async (req, res, next) => {
 
     // 6. Wrap response in audio-optimized format
     res.json({
-      speechReply: buildSpeechReply(parseResult),
+      speechReply: buildSpeechReply(parseResult, timezone),
       rawIntent: parseResult.intent,
       audioMetadata: buildAudioMetadata(parseResult),
     });

@@ -69,7 +69,10 @@ export default function HomePage() {
           <button
             className="app-nav-icon"
             aria-label="Voice mode"
-            onClick={() => setVoiceOpen(true)}
+            onClick={() => {
+              window.dispatchEvent(new Event('nudge:event-created'));
+              setVoiceOpen(true);
+            }}
             title="Voice mode"
           >
             <MicIcon />

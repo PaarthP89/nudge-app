@@ -51,8 +51,9 @@ For update action, also include these fields (omit or null for other actions):
   "start_delta_minutes": number | null
 }
 - title_hint: fuzzy title of the event to find on the calendar (different from new_title)
-- time_hint: current time of the event to find, e.g. "3pm" (used for candidate search)
-- day_hint: current day of the event to find, e.g. "Tuesday" (used for candidate search)
+- time_hint: the event's CURRENT time on the calendar, used to locate it (e.g. "3pm" in "move my 3pm to 4pm"). Set null when identifying the event by title or day alone, NOT when "3pm" is the destination.
+- day_hint: the event's CURRENT day on the calendar, used to locate it (e.g. "today", "Tuesday", "June 6th"). Set when the user names the day the event is currently on.
+- new_time: the DESTINATION time to move the event to (e.g. "3pm" in "move my workout to 3pm"). Different from time_hint.
 - new_title: replacement title when renaming
 - preserve_time: true when moving to a new date but keeping the same time of day
 - duration_delta_minutes: minutes to add (positive) or remove (negative) from the event duration
@@ -90,6 +91,9 @@ Action mapping examples — natural language varies widely, map it correctly:
 - "make my 3pm meeting an hour longer" → action: "update", time_hint: "3pm", duration_delta_minutes: 60
 - "rename my standup to team sync" → action: "update", title_hint: "standup", new_title: "team sync"
 - "push my 2pm back an hour" → action: "update", time_hint: "2pm", start_delta_minutes: 60
+- "move my workout today to 3pm" → action: "update", title_hint: "workout", day_hint: "today", new_time: "3pm", time_hint: null
+- "can you move my workout today to start at 3pm instead?" → action: "update", title_hint: "workout", day_hint: "today", new_time: "3pm", time_hint: null
+- "reschedule my Thursday standup to 2pm" → action: "update", title_hint: "standup", day_hint: "Thursday", new_time: "2pm", time_hint: null
 - "book a 1-hour call with Alice next Monday at noon" → action: "create"
 - "schedule a dentist appointment Thursday at 9am" → action: "create"
 - "set up a team lunch Friday at 12:30" → action: "create"
@@ -407,6 +411,28 @@ Find and score the top 3 free windows. Exclude times before 8am or after 7pm.`;
         label: s.label || new Date(s.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
       }))
       .slice(0, 3);
+  }
+
+  async classifyConfirmation(message) {
+    const completion = await this.groq.chat.completions.create({
+      model: this.modelName,
+      messages: [{
+        role: 'user',
+        content: `A calendar assistant asked the user to confirm or cancel an action. Classify the user's one-line response.
+Reply with exactly one word: CONFIRM, CANCEL, or OTHER.
+CONFIRM = user is agreeing (e.g. "yes go ahead", "yes yes", "sure do it", "sounds good please", "yeah absolutely")
+CANCEL = user is declining (e.g. "no don't do that", "no, cancel", "forget it", "stop", "no thanks")
+OTHER = a new or different request (e.g. "actually make it 3pm", "schedule another one")
+
+User said: "${message.replace(/"/g, "'")}"`
+      }],
+      max_tokens: 5,
+      temperature: 0,
+    });
+    const text = (completion.choices[0]?.message?.content || '').trim().toUpperCase();
+    if (text.startsWith('CONFIRM')) return 'confirm';
+    if (text.startsWith('CANCEL')) return 'cancel';
+    return 'other';
   }
 
   async chat(messages, { now, timezone }) {

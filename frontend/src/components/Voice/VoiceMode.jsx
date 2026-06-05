@@ -17,12 +17,13 @@ function playPing() {
   } catch (_) {}
 }
 
+const EXIT_RE = /^(all done|exit|close|quit|stop listening|goodbye|bye|that'?s all|i'?m done|close voice|stop voice)[.!?]?$/i;
+
 const STATUS_LABELS = {
   idle: 'Ready',
   listening: 'Listening',
   thinking: 'Thinking',
   speaking: 'Speaking',
-  done: 'Done',
   error: 'Error',
 };
 
@@ -75,6 +76,7 @@ export default function VoiceMode({ onClose }) {
     try { recognitionRef.current?.abort(); } catch (_) {}
     window.speechSynthesis?.cancel();
     abortRef.current?.abort();
+    window.dispatchEvent(new Event('nudge:event-created')); // refresh calendar on exit
     updateStatus('idle');
     setTranscript('');
   }
@@ -92,15 +94,22 @@ export default function VoiceMode({ onClose }) {
       if (afterSpeakCalled || !loopActiveRef.current) return;
       afterSpeakCalled = true;
       clearTimeout(fallbackTimer);
-      if (audioMetadata?.waitForInput && audioMetadata?.clearToListen) {
-        playPing();
-        setTimeout(() => {
-          if (loopActiveRef.current) startListening();
-        }, 300);
-      } else {
-        loopActiveRef.current = false;
-        updateStatus('done');
+
+      if (audioMetadata?.waitForInput === false) {
+        voiceHistoryRef.current = [];
+        window.dispatchEvent(new Event('nudge:event-created'));
       }
+
+      if (audioMetadata?.exitLoop) {
+        stopLoop();
+        onClose?.();
+        return;
+      }
+
+      playPing();
+      setTimeout(() => {
+        if (loopActiveRef.current) startListening();
+      }, 300);
     };
 
     // Fallback timer guards against Chrome's intermittent utter.onend failure
@@ -152,11 +161,13 @@ export default function VoiceMode({ onClose }) {
       if (!loopActiveRef.current) return;
 
       // Accumulate conversation history (capped at 10 turns = 20 entries)
-      voiceHistoryRef.current = [
-        ...voiceHistoryRef.current,
-        { role: 'user', content: text },
-        { role: 'assistant', content: data.speechReply || '' }
-      ].slice(-20);
+      voiceHistoryRef.current = data.audioMetadata?.clearHistory
+        ? []
+        : [
+            ...voiceHistoryRef.current,
+            { role: 'user', content: text },
+            { role: 'assistant', content: data.speechReply || '' }
+          ].slice(-20);
 
       speakAndContinue(data.speechReply, data.audioMetadata);
     } catch (err) {
@@ -214,7 +225,13 @@ export default function VoiceMode({ onClose }) {
       if (statusRef.current !== 'listening') return;
 
       if (accumulatedFinal.trim()) {
-        sendToBackend(accumulatedFinal.trim());
+        const msg = accumulatedFinal.trim();
+        if (EXIT_RE.test(msg)) {
+          stopLoop();
+          onClose?.();
+          return;
+        }
+        sendToBackend(msg);
       } else {
         // No speech captured — restart after brief pause
         setTimeout(() => {
@@ -302,7 +319,7 @@ export default function VoiceMode({ onClose }) {
       <div className="voice-mode-controls">
         {!isActive && (
           <button className="voice-start-btn" onClick={startLoop}>
-            {status === 'done' ? 'Start Again' : status === 'error' ? 'Retry' : 'Start Voice Mode'}
+            {status === 'error' ? 'Retry' : 'Start Voice Mode'}
           </button>
         )}
       </div>
