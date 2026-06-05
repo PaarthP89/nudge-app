@@ -1048,6 +1048,83 @@ describe('POST /api/assistant/parse — 3D event editing', () => {
     expect(res.body.updateProposal.conflicts).toBeDefined();
     expect(res.body.updateProposal.conflicts.length).toBeGreaterThan(0);
   });
+
+  it('moves the june-6th workout to june 8th — not the june-5th one', async () => {
+    // Regression: "reschedule my workout on june 6th to june 8th" must
+    // (a) only find the june-6th event, (b) produce patches that land on june 8th.
+    const WORKOUT_JUN5 = {
+      id: 'workout-jun5', title: 'workout',
+      start: '2026-06-05T14:00:00-07:00', end: '2026-06-05T15:00:00-07:00',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+    const WORKOUT_JUN6 = {
+      id: 'workout-jun6', title: 'workout',
+      start: '2026-06-06T14:00:00-07:00', end: '2026-06-06T15:00:00-07:00',
+      allDay: false, location: null, description: null,
+      colorId: null, attendees: [], status: 'confirmed', recurringEventId: null
+    };
+
+    const moveIntent = {
+      action: 'update',
+      title: 'workout',
+      title_hint: 'workout',
+      time_hint: null,
+      day_hint: 'june 6th',
+      new_title: null,
+      new_date: 'june 8th',
+      new_time: null,
+      preserve_time: true,
+      duration_delta_minutes: null,
+      start_delta_minutes: null,
+      // start_time intentionally points to the source date — the bug scenario
+      start_time: '2026-06-06T14:00:00-07:00',
+      end_time: null,
+      duration_minutes: 60,
+      attendees: [],
+      location: null,
+      confidence: 0.92,
+      date_known: true,
+      time_known: false,
+      recurrence: null,
+      target_period: null,
+      preferences: null,
+    };
+
+    const listEventsMock = jest.fn();
+    // First call: search june-6th window only → returns only june-6th workout
+    listEventsMock.mockResolvedValueOnce([WORKOUT_JUN6]);
+    // Subsequent calls: conflict check for the new slot
+    listEventsMock.mockResolvedValue([]);
+
+    AIService.mockImplementation(() => ({
+      parseIntent: jest.fn().mockResolvedValue(moveIntent),
+      chat: jest.fn().mockResolvedValue(moveIntent),
+      suggestSlots: jest.fn().mockResolvedValue([])
+    }));
+    GoogleCalendarService.mockImplementation(() => ({
+      listEvents: listEventsMock
+    }));
+
+    const res = await request(app)
+      .post('/api/assistant/parse')
+      .send({ message: 'can you reschedule my workout on june 6th to be on june 8th instead?' });
+
+    expect(res.status).toBe(200);
+
+    // Must find exactly the june-6th workout, not both
+    expect(res.body.updateProposal).toBeDefined();
+    expect(res.body.updateProposal).not.toBeNull();
+    expect(res.body.updateProposal.candidate.id).toBe('workout-jun6');
+
+    // Patches must move the event to june 8th
+    const newStart = new Date(res.body.updateProposal.after.start);
+    expect(newStart.getDate()).toBe(8);
+    expect(newStart.getMonth()).toBe(5); // 0-indexed: June = 5
+
+    // june-5th workout must not be touched
+    expect(res.body.candidates.every(c => c.id !== 'workout-jun5')).toBe(true);
+  });
 });
 
 // ── 3C: find_slot (goal-oriented scheduling) ──────────────────────────────────

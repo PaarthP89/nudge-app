@@ -95,6 +95,14 @@ class GoogleCalendarService {
     });
   }
 
+  async getEvent(eventId) {
+    const response = await this.calendar.events.get({
+      calendarId: 'primary',
+      eventId,
+    });
+    return normalizeEvent(response.data);
+  }
+
   async getFreeBusy(startDate, endDate) {
     throw new Error('not implemented');
   }

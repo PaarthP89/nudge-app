@@ -9,6 +9,13 @@ function formatTime(dateStr) {
   return new Date(dateStr).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
+function formatEventDateTime(dateStr) {
+  return new Date(dateStr).toLocaleString(undefined, {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit'
+  });
+}
+
 // ─── IntentCard ───────────────────────────────────────────────────────────────
 
 function formatDuration(mins) {
@@ -265,7 +272,7 @@ function DeleteConfirmCard({ payload, onConfirmDelete, onCancel }) {
             <div className="delete-candidate-title">{ev.title}</div>
             {!ev.allDay && (
               <div className="delete-candidate-time">
-                {formatTime(ev.start)} – {formatTime(ev.end)}
+                {formatEventDateTime(ev.start)} – {formatTime(ev.end)}
               </div>
             )}
           </div>
@@ -294,9 +301,65 @@ function DeleteConfirmCard({ payload, onConfirmDelete, onCancel }) {
   );
 }
 
+// ─── UpdateCandidateCard ──────────────────────────────────────────────────────
+
+function UpdateCandidateCard({ payload, onSelectCandidate, onCancel }) {
+  const { candidates, intent } = payload ?? {};
+  const [status, setStatus] = useState('idle'); // idle | loading | cancelled
+  const [loadingId, setLoadingId] = useState(null);
+
+  if (status === 'cancelled') {
+    return <div className="confirm-card confirm-card--cancelled">Cancelled.</div>;
+  }
+
+  if (!candidates?.length) return null;
+
+  async function handleSelect(ev) {
+    setLoadingId(ev.id);
+    setStatus('loading');
+    await onSelectCandidate(ev, intent);
+    setStatus('idle');
+    setLoadingId(null);
+  }
+
+  return (
+    <div className="confirm-card">
+      {candidates.map(ev => (
+        <div key={ev.id} className="delete-candidate-row">
+          <div className="delete-candidate-info">
+            <div className="delete-candidate-title">{ev.title}</div>
+            {!ev.allDay && (
+              <div className="delete-candidate-time">
+                {formatEventDateTime(ev.start)} – {formatTime(ev.end)}
+              </div>
+            )}
+          </div>
+          <button
+            className="confirm-btn confirm-btn--primary"
+            onClick={() => handleSelect(ev)}
+            disabled={status === 'loading'}
+            style={{ flexShrink: 0 }}
+          >
+            {loadingId === ev.id && status === 'loading' ? 'Loading…' : 'Select'}
+          </button>
+        </div>
+      ))}
+      <div className="confirm-actions">
+        <button
+          className="confirm-btn confirm-btn--cancel"
+          onClick={() => { onCancel?.(); setStatus('cancelled'); }}
+          disabled={status === 'loading'}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── MessageBubble ────────────────────────────────────────────────────────────
 
-function MessageBubble({ message, onConfirm, onConfirmDelete, onConfirmUpdate, onConfirmBatch, onConfirmSlot, onCancelDraft, onPickSuggestion }) {
+function MessageBubble({ message, onConfirm, onConfirmDelete, onConfirmUpdate, onConfirmBatch, onConfirmSlot, onCancelDraft, onPickSuggestion, onSelectUpdateCandidate }) {
   const isUser = message.role === 'user';
 
   return (
@@ -348,6 +411,13 @@ function MessageBubble({ message, onConfirm, onConfirmDelete, onConfirmUpdate, o
             onCancel={onCancelDraft}
           />
         )}
+        {message.type === 'updateDisambig' && (
+          <UpdateCandidateCard
+            payload={message.payload}
+            onSelectCandidate={onSelectUpdateCandidate}
+            onCancel={onCancelDraft}
+          />
+        )}
         <span className="msg-time">
           {message.timestamp.toLocaleTimeString(undefined, {
             hour: 'numeric', minute: '2-digit'
@@ -380,7 +450,7 @@ const QUICK_CHIPS = [
 
 export default function ChatPanel() {
   const [input, setInput] = useState('');
-  const { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, confirmSlot, cancelDraft, pickSuggestion } = useChat();
+  const { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, confirmSlot, cancelDraft, pickSuggestion, selectUpdateCandidate } = useChat();
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
 
@@ -440,6 +510,7 @@ export default function ChatPanel() {
             onConfirmSlot={confirmSlot}
             onCancelDraft={cancelDraft}
             onPickSuggestion={pickSuggestion}
+            onSelectUpdateCandidate={selectUpdateCandidate}
           />
         ))}
         {loading && <TypingIndicator />}

@@ -304,6 +304,11 @@ export default function useChat() {
         newMessages.push(makeMessage('assistant', '', 'editConfirm', updateProposal));
       }
 
+      // Update disambiguation — multiple candidates found, let user pick which event.
+      if (intent.action === 'update' && candidates?.length > 0 && !updateProposal) {
+        newMessages.push(makeMessage('assistant', '', 'updateDisambig', { candidates, intent }));
+      }
+
       // Slot options — show ranked free windows for user to pick.
       if (intent.action === 'find_slot' && slotOptions) {
         newMessages.push(makeMessage('assistant', '', 'slotOptions', slotOptions));
@@ -330,5 +335,36 @@ export default function useChat() {
     historyRef.current = [];
   }, []);
 
-  return { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, confirmSlot, cancelDraft, pickSuggestion };
+  // Called when user picks a specific event from an update disambiguation card.
+  // Sends the stored intent back with the pinned candidateId so the backend skips
+  // re-searching and computes the patch immediately.
+  const selectUpdateCandidate = useCallback(async (candidate, pendingIntent) => {
+    setLoading(true);
+    setError(null);
+    const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const clientNow = new Date().toLocaleString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+    });
+    try {
+      const res = await axios.post(
+        '/api/assistant/parse',
+        { forcedIntent: pendingIntent, candidateId: candidate.id, now: clientNow, timezone: clientTimezone },
+        { withCredentials: true }
+      );
+      const { updateProposal, reply } = res.data;
+      const newMsgs = [];
+      if (reply) newMsgs.push(makeMessage('assistant', reply));
+      if (updateProposal) {
+        newMsgs.push(makeMessage('assistant', '', 'editConfirm', updateProposal));
+      }
+      setMessages(prev => [...prev, ...newMsgs]);
+    } catch (err) {
+      setError('Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, confirmSlot, cancelDraft, pickSuggestion, selectUpdateCandidate };
 }

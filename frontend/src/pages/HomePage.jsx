@@ -44,8 +44,6 @@ export default function HomePage() {
           </div>
           <div className="app-nav-tabs">
             <button className="app-nav-tab active">Calendar</button>
-            <button className="app-nav-tab">Insights</button>
-            <button className="app-nav-tab">Settings</button>
           </div>
         </div>
         <div className="app-nav-right">

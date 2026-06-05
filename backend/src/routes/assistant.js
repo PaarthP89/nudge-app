@@ -8,6 +8,37 @@ const { detectConflicts } = GoogleCalendarService;
 const router = express.Router();
 router.use(requireAuth);
 
+// Converts a natural-language day reference (day_hint) to a Date on which to search.
+// Handles "June 6th", "June 6", "Monday", "tuesday", ISO dates, etc.
+// Returns null if the hint is unrecognisable (caller falls back to 7-day window).
+function parseDayHint(hint, now = new Date()) {
+  if (!hint || typeof hint !== 'string') return null;
+  // Strip ordinal suffixes: "6th" → "6", "1st" → "1"
+  const s = hint.trim().replace(/(\d+)(st|nd|rd|th)\b/gi, '$1');
+
+  // Try "<month> <day>" with current year, e.g. "June 6 2026"
+  const withYear = `${s} ${now.getFullYear()}`;
+  let d = new Date(withYear);
+  if (!isNaN(d.getTime())) return d;
+
+  // Try direct parse (ISO strings, "2026-06-06", full dates)
+  d = new Date(s);
+  if (!isNaN(d.getTime())) return d;
+
+  // Day-of-week: find most recent past occurrence (including today)
+  const dow = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  const idx = dow.indexOf(s.toLowerCase());
+  if (idx !== -1) {
+    const result = new Date(now);
+    result.setHours(0, 0, 0, 0);
+    const daysBack = (result.getDay() - idx + 7) % 7;
+    result.setDate(result.getDate() - daysBack);
+    return result;
+  }
+
+  return null;
+}
+
 function parseTimeHint(hint, refDate = new Date()) {
   if (!hint) return null;
   const m = hint.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
@@ -40,6 +71,27 @@ function computeUpdatePatches(candidate, intent) {
     const delta = intent.start_delta_minutes * 60 * 1000;
     newStart    = new Date(newStart.getTime() + delta);
     timeChanged = true;
+  } else if (intent.new_date) {
+    // AI explicitly extracted the destination date as a human-readable string.
+    // Prefer this over start_time, which may have been set to the SOURCE date.
+    const destDate = parseDayHint(intent.new_date);
+    if (destDate) {
+      if (intent.new_time) {
+        // new_time provided — parse it on the destination date
+        const destTime = parseTimeHint(intent.new_time, destDate);
+        newStart = destTime ?? new Date(
+          destDate.getFullYear(), destDate.getMonth(), destDate.getDate(),
+          candidateStart.getHours(), candidateStart.getMinutes(), 0, 0
+        );
+      } else {
+        // keep the same time of day on the new date
+        newStart = new Date(
+          destDate.getFullYear(), destDate.getMonth(), destDate.getDate(),
+          candidateStart.getHours(), candidateStart.getMinutes(), 0, 0
+        );
+      }
+      timeChanged = true;
+    }
   } else if (intent.date_known && intent.start_time) {
     const intentStart = new Date(intent.start_time);
     if (intent.time_known && !intent.preserve_time) {
@@ -138,23 +190,33 @@ function validateHistory(raw) {
 
 async function runParse(req, res, next) {
   try {
-    const message = validateMessage(req, res);
-    if (!message) return;
+    // Fast path: caller is resolving a previously ambiguous candidate.
+    // forcedIntent skips AI parsing; candidateId pins a specific event for update.
+    const forcedIntent = req.body.forcedIntent;
+    const candidateId  = req.body.candidateId;
 
-    const history = validateHistory(req.body.history);
     const service = new AIService();
-
     let intent;
-    if (history.length > 0) {
-      const messages = [...history, { role: 'user', content: message }];
-      intent = await service.chat(messages, getContext(req));
+    let message = '';
+    if (forcedIntent && typeof forcedIntent === 'object') {
+      intent = forcedIntent;
     } else {
-      intent = await service.parseIntent(message, getContext(req));
+      message = validateMessage(req, res);
+      if (!message) return;
+
+      const history = validateHistory(req.body.history);
+
+      if (history.length > 0) {
+        const messages = [...history, { role: 'user', content: message }];
+        intent = await service.chat(messages, getContext(req));
+      } else {
+        intent = await service.parseIntent(message, getContext(req));
+      }
     }
 
     // If the model returned 'unknown' but the raw message has an unambiguous action keyword,
     // override the action so the downstream search blocks can run.
-    if (intent.action === 'unknown') {
+    if (intent.action === 'unknown' && message) {
       const lc = message.toLowerCase();
       if (/\b(delete|remove|cancel|get rid of)\b/.test(lc))        intent.action = 'delete';
       else if (/\b(schedule|book|create|add|set up|plan)\b/.test(lc)) intent.action = 'create';
@@ -310,13 +372,30 @@ async function runParse(req, res, next) {
         const calService = new GoogleCalendarService(accessToken, refreshToken);
         const titleFilter = intent.title_hint ?? intent.title;
 
+        // Fast path: user already picked a specific candidate.
+        if (candidateId) {
+          try {
+            const event = await calService.getEvent(candidateId);
+            candidates = [event];
+          } catch (e) {
+            // fall through to search if fetch fails
+          }
+        }
+
         let searchStart, searchEnd;
 
         const timeHintDate = parseTimeHint(intent.time_hint);
+        const dayHintDate  = parseDayHint(intent.day_hint);
+
+        if (candidates.length === 0) {
         if (timeHintDate) {
           // time_hint unambiguously refers to current event's time
           searchStart = new Date(timeHintDate.getTime() - 90 * 60 * 1000);
           searchEnd   = new Date(timeHintDate.getTime() + 90 * 60 * 1000);
+        } else if (titleFilter && dayHintDate) {
+          // User named both the event title and its source day — search only that day.
+          searchStart = new Date(dayHintDate.getFullYear(), dayHintDate.getMonth(), dayHintDate.getDate(), 0, 0, 0);
+          searchEnd   = new Date(dayHintDate.getFullYear(), dayHintDate.getMonth(), dayHintDate.getDate(), 23, 59, 59);
         } else if (titleFilter) {
           // title search is safer than start_time (which for update is the NEW desired time)
           searchStart = new Date();
@@ -367,6 +446,7 @@ async function runParse(req, res, next) {
           }
           candidates = altMatches.slice(0, 3);
         }
+        } // end if (candidates.length === 0) search block
 
         if (candidates.length === 0) {
           reply = titleFilter
@@ -406,7 +486,7 @@ async function runParse(req, res, next) {
             ? `Found "${candidate.title}" — the new time has a conflict. Update anyway?`
             : `Found "${candidate.title}" — ready to update?`;
         } else {
-          reply = `Found ${candidates.length} events — which one should I update?`;
+          reply = `Found ${candidates.length} events with that name — which one would you like to update?`;
         }
       } catch (err) {
         console.error('[assistant] update search error:', err.message);
