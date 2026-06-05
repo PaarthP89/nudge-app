@@ -372,6 +372,12 @@ function TypingIndicator() {
 
 // ─── ChatPanel ────────────────────────────────────────────────────────────────
 
+const QUICK_CHIPS = [
+  { label: 'Schedule meeting', fill: 'Schedule a meeting ' },
+  { label: "Today's Brief", fill: "What's on my calendar today?" },
+  { label: 'Reschedule…', fill: 'Reschedule ' },
+];
+
 export default function ChatPanel() {
   const [input, setInput] = useState('');
   const { messages, loading, error, sendMessage, confirmEvent, confirmDelete, confirmUpdate, confirmBatch, confirmSlot, cancelDraft, pickSuggestion } = useChat();
@@ -401,8 +407,25 @@ export default function ChatPanel() {
   return (
     <div className="chat-panel">
       <div className="chat-header">
-        <span className="chat-title">Nudge</span>
-        <span className="chat-subtitle">AI scheduling assistant</span>
+        <div className="chat-header-main">
+          <div className="chat-avatar" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 12c2.7 0 4.8-2.1 4.8-4.8S14.7 2.4 12 2.4 7.2 4.5 7.2 7.2 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.8v2.4h19.2v-2.4c0-3.2-6.4-4.8-9.6-4.8z"/>
+            </svg>
+          </div>
+          <div className="chat-header-info">
+            <span className="chat-title">Nudge AI</span>
+            <div className="chat-status">
+              <span className="chat-status-dot" />
+              <span className="chat-subtitle">ACTIVE PARTNER</span>
+            </div>
+          </div>
+        </div>
+        <button className="chat-menu-btn" aria-label="More options">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/>
+          </svg>
+        </button>
       </div>
 
       <div className="chat-messages">
@@ -422,6 +445,23 @@ export default function ChatPanel() {
         {loading && <TypingIndicator />}
         {error && <div className="chat-error">{error}</div>}
         <div ref={bottomRef} />
+      </div>
+
+      <div className="chat-chips">
+        {QUICK_CHIPS.map(chip => (
+          <button
+            key={chip.label}
+            className="chat-chip"
+            type="button"
+            disabled={loading}
+            onClick={() => {
+              setInput(chip.fill);
+              textareaRef.current?.focus();
+            }}
+          >
+            {chip.label}
+          </button>
+        ))}
       </div>
 
       <form className="chat-input-row" onSubmit={handleSubmit}>

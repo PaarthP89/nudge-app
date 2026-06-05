@@ -431,12 +431,12 @@ export default function CalendarView() {
   return (
     <div className="calendar-view">
       <div className="calendar-header">
+        <h2 className="period-label">{periodLabel}</h2>
         <div className="calendar-controls">
           <button className="nav-btn" onClick={() => navigate(-1)}>&#8249;</button>
           <button className="today-btn" onClick={goToday}>Today</button>
           <button className="nav-btn" onClick={() => navigate(1)}>&#8250;</button>
         </div>
-        <h2 className="period-label">{periodLabel}</h2>
         <div className="view-toggle">
           <button
             className={`toggle-btn${viewMode === 'month' ? ' active' : ''}`}
@@ -481,6 +481,14 @@ export default function CalendarView() {
         onClose={() => setSelectedEvent(null)}
         onDelete={handleDeleteEvent}
       />
+
+      <button
+        className="calendar-fab"
+        onClick={() => document.querySelector('.chat-input')?.focus()}
+        aria-label="New event"
+      >
+        +
+      </button>
     </div>
   );
 }

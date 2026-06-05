@@ -1,0 +1,161 @@
+/* ─── App shell ──────────────────────────────────────────────────────────── */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: #fbf9f8;
+}
+
+/* ─── Top nav ────────────────────────────────────────────────────────────── */
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 16px;
+  background: #fff;
+  border-bottom: 1px solid #e3e2e2;
+  flex-shrink: 0;
+  gap: 24px;
+}
+
+.app-nav-left {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 100%;
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+}
+
+.app-logo-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: #0f62fe;
+  color: #fff;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.5px;
+  flex-shrink: 0;
+}
+
+.app-logo-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #313333;
+  letter-spacing: -0.2px;
+}
+
+.app-nav-tabs {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
+
+.app-nav-tab {
+  height: 100%;
+  padding: 0 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 14px;
+  font-weight: 500;
+  color: #5e5f5f;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.app-nav-tab.active {
+  color: #0f62fe;
+  border-bottom-color: #0f62fe;
+  font-weight: 600;
+}
+
+.app-nav-tab:hover:not(.active) {
+  color: #313333;
+  background: #f5f3f3;
+}
+
+.app-nav-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.app-nav-new-event {
+  background: #0f62fe;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.app-nav-new-event:hover { background: #0048c4; }
+
+.app-nav-icon {
+  background: none;
+  border: none;
+  padding: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #5e5f5f;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.app-nav-icon:hover { background: #efeded; }
+
+/* ─── Body layout ────────────────────────────────────────────────────────── */
+
+.app-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.app-sidebar {
+  width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid #e3e2e2;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-main {
+  flex: 1;
+  overflow: hidden;
+  min-width: 0;
+}
+
+/* ─── Loading state ──────────────────────────────────────────────────────── */
+
+.app-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  color: #5e5f5f;
+  font-size: 14px;
+}

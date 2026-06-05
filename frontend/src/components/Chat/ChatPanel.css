@@ -2,40 +2,103 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  font-family: system-ui, -apple-system, sans-serif;
   background: #fff;
   overflow: hidden;
 }
 
-/* Header */
+/* ─── Header ─────────────────────────────────────────────────────────────── */
+
 .chat-header {
   flex-shrink: 0;
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid #e5e7eb;
+  padding: 12px 14px;
+  border-bottom: 1px solid #e3e2e2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chat-header-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.chat-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #0f62fe;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.chat-header-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  min-width: 0;
 }
 
 .chat-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #111827;
+  font-size: 14px;
+  font-weight: 600;
+  color: #313333;
+  line-height: 1.2;
+}
+
+.chat-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chat-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #006e2b;
+  flex-shrink: 0;
 }
 
 .chat-subtitle {
-  font-size: 11px;
-  color: #9ca3af;
+  font-size: 10px;
+  font-weight: 600;
+  color: #006e2b;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
-/* Message thread */
+.chat-menu-btn {
+  background: none;
+  border: none;
+  padding: 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #5e5f5f;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.chat-menu-btn:hover { background: #efeded; }
+
+/* ─── Message thread ─────────────────────────────────────────────────────── */
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;
   padding: 14px 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  min-height: 0;
 }
 
 .msg-row {
@@ -46,25 +109,26 @@
 
 .msg-bubble {
   max-width: 86%;
-  padding: 8px 12px;
-  border-radius: 16px;
+  padding: 9px 13px;
+  border-radius: 12px;
 }
 
 .msg-bubble.user {
-  background: #1d4ed8;
+  background: #0053de;
   color: #fff;
-  border-bottom-right-radius: 4px;
+  border-bottom-right-radius: 3px;
 }
 
 .msg-bubble.assistant {
-  background: #f3f4f6;
-  color: #111827;
-  border-bottom-left-radius: 4px;
+  background: #f5f3f3;
+  color: #313333;
+  border-bottom-left-radius: 3px;
+  border: 1px solid #e3e2e2;
 }
 
 .msg-content {
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
@@ -74,11 +138,12 @@
   display: block;
   font-size: 10px;
   opacity: 0.55;
-  margin-top: 3px;
+  margin-top: 4px;
 }
 .msg-bubble.user .msg-time { text-align: right; }
 
-/* Typing indicator */
+/* ─── Typing indicator ───────────────────────────────────────────────────── */
+
 .typing-bubble {
   display: flex;
   align-items: center;
@@ -90,7 +155,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #9ca3af;
+  background: #7a7b7b;
   animation: bounce 1.2s infinite;
 }
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
@@ -101,46 +166,86 @@
   30%           { transform: translateY(-5px); }
 }
 
-/* Inline error */
+/* ─── Inline error ───────────────────────────────────────────────────────── */
+
 .chat-error {
   align-self: center;
   font-size: 12px;
-  color: #dc2626;
-  background: #fef2f2;
-  border-radius: 8px;
+  color: #a83836;
+  background: #fff0ef;
+  border-radius: 4px;
   padding: 6px 14px;
   text-align: center;
+  border: 1px solid #fa746f;
 }
 
-/* Input row */
+/* ─── Quick chips ────────────────────────────────────────────────────────── */
+
+.chat-chips {
+  flex-shrink: 0;
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px 4px;
+  flex-wrap: wrap;
+}
+
+.chat-chip {
+  background: none;
+  border: 1px solid #b2b2b2;
+  border-radius: 9999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #5e5f5f;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.chat-chip:hover:not(:disabled) {
+  background: #efeded;
+  border-color: #7a7b7b;
+  color: #313333;
+}
+
+.chat-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ─── Input row ──────────────────────────────────────────────────────────── */
+
 .chat-input-row {
   flex-shrink: 0;
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 10px 12px;
-  border-top: 1px solid #e5e7eb;
+  padding: 8px 12px 12px;
+  border-top: 1px solid #e3e2e2;
 }
 
 .chat-input {
   flex: 1;
-  border: 1px solid #d1d5db;
-  border-radius: 18px;
-  padding: 8px 14px;
+  border: 1px solid #b2b2b2;
+  border-radius: 4px;
+  padding: 8px 12px;
   font-size: 13px;
-  font-family: inherit;
   line-height: 1.45;
   resize: none;
   outline: none;
   min-height: 36px;
   max-height: 120px;
   overflow-y: auto;
-  background: #f9fafb;
+  background: #fbf9f8;
+  color: #313333;
   transition: border-color 0.15s, background 0.15s;
 }
 
+.chat-input::placeholder { color: #7a7b7b; }
+
 .chat-input:focus {
-  border-color: #1d4ed8;
+  border-color: #0f62fe;
+  border-width: 2px;
   background: #fff;
 }
 
@@ -155,7 +260,7 @@
   height: 34px;
   border-radius: 50%;
   border: none;
-  background: #1d4ed8;
+  background: #0f62fe;
   color: #fff;
   font-size: 16px;
   cursor: pointer;
@@ -165,24 +270,25 @@
   transition: background 0.15s;
 }
 
-.chat-send:hover:not(:disabled) { background: #1e40af; }
+.chat-send:hover:not(:disabled) { background: #0048c4; }
 
 .chat-send:disabled {
-  background: #d1d5db;
+  background: #e3e2e2;
   cursor: not-allowed;
+  color: #7a7b7b;
 }
 
-/* ─── Intent card ─────────────────────────────────────────────────────────── */
+/* ─── Intent card ────────────────────────────────────────────────────────── */
 
 .intent-card {
   margin-top: 8px;
   background: #fff;
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 8px 10px;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid #e3e2e2;
 }
 
 .intent-row {
@@ -193,7 +299,7 @@
 }
 
 .intent-label {
-  color: #9ca3af;
+  color: #7a7b7b;
   font-weight: 600;
   min-width: 56px;
   flex-shrink: 0;
@@ -203,19 +309,18 @@
 }
 
 .intent-value {
-  color: #111827;
+  color: #313333;
   word-break: break-word;
 }
 
-
-/* ─── Conflict card ───────────────────────────────────────────────────────── */
+/* ─── Conflict card ──────────────────────────────────────────────────────── */
 
 .conflict-card {
   margin-top: 8px;
-  background: #fffbeb;
-  border: 1px solid #fbbf24;
-  border-radius: 8px;
-  padding: 8px 10px;
+  background: #fff8e6;
+  border: 1px solid #f0c040;
+  border-radius: 4px;
+  padding: 10px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -224,9 +329,9 @@
 .conflict-header {
   font-size: 10px;
   font-weight: 700;
-  color: #92400e;
+  color: #8a4e00;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
 }
 
 .conflict-event {
@@ -238,12 +343,12 @@
 .conflict-event-title {
   font-size: 12px;
   font-weight: 600;
-  color: #111827;
+  color: #313333;
 }
 
 .conflict-event-time {
   font-size: 11px;
-  color: #6b7280;
+  color: #5e5f5f;
 }
 
 .conflict-suggestions {
@@ -256,36 +361,36 @@
 .suggestions-label {
   font-size: 10px;
   font-weight: 700;
-  color: #92400e;
+  color: #8a4e00;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
 .suggestion-btn {
   background: #fff;
-  border: 1px solid #d97706;
-  border-radius: 6px;
-  color: #92400e;
+  border: 1px solid #c89400;
+  border-radius: 4px;
+  color: #8a4e00;
   font-size: 12px;
-  font-weight: 600;
-  padding: 4px 10px;
+  font-weight: 500;
+  padding: 5px 10px;
   cursor: pointer;
   text-align: left;
   transition: background 0.15s;
 }
 
-.suggestion-btn:hover:not(:disabled) { background: #fffbeb; }
+.suggestion-btn:hover:not(:disabled) { background: #fff8e6; }
 .suggestion-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .conflict-actions {
   display: flex;
   gap: 8px;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .conflict-btn {
   border: none;
-  border-radius: 6px;
+  border-radius: 4px;
   font-size: 12px;
   font-weight: 600;
   padding: 5px 12px;
@@ -294,25 +399,25 @@
 }
 
 .conflict-btn--continue {
-  background: #d97706;
+  background: #c89400;
   color: #fff;
 }
-.conflict-btn--continue:hover { background: #b45309; }
+.conflict-btn--continue:hover { background: #a67900; }
 
 .conflict-btn--cancel {
   background: transparent;
-  color: #6b7280;
+  color: #5e5f5f;
   padding: 5px 8px;
 }
-.conflict-btn--cancel:hover { color: #374151; }
+.conflict-btn--cancel:hover { color: #313333; }
 
-/* ─── Confirm card ────────────────────────────────────────────────────────── */
+/* ─── Confirm card ───────────────────────────────────────────────────────── */
 
 .confirm-card {
   margin-top: 8px;
-  background: #f9fafb;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  background: #f5f3f3;
+  border: 1px solid #e3e2e2;
+  border-radius: 4px;
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
@@ -322,7 +427,7 @@
 .confirm-prompt {
   margin: 0;
   font-size: 12px;
-  color: #374151;
+  color: #313333;
 }
 
 .confirm-actions {
@@ -333,7 +438,7 @@
 
 .confirm-btn {
   border: none;
-  border-radius: 6px;
+  border-radius: 4px;
   font-size: 12px;
   font-weight: 600;
   padding: 5px 12px;
@@ -347,49 +452,50 @@
 }
 
 .confirm-btn--primary {
-  background: #1d4ed8;
+  background: #0f62fe;
   color: #fff;
 }
 
 .confirm-btn--primary:hover:not(:disabled) {
-  background: #1e40af;
+  background: #0048c4;
 }
 
 .confirm-btn--warn {
-  background: #d97706;
+  background: #c89400;
+  color: #fff;
 }
 
 .confirm-btn--warn:hover:not(:disabled) {
-  background: #b45309;
+  background: #a67900;
 }
 
 .confirm-btn--cancel {
   background: transparent;
-  color: #6b7280;
+  color: #5e5f5f;
   padding: 5px 8px;
 }
 
 .confirm-btn--cancel:hover:not(:disabled) {
-  color: #374151;
+  color: #313333;
 }
 
 .confirm-card--done {
-  color: #166534;
-  background: #f0fdf4;
-  border-color: #86efac;
+  color: #005d23;
+  background: #e8f5e9;
+  border-color: #93f59e;
   font-size: 12px;
   font-weight: 600;
 }
 
 .confirm-card--cancelled {
-  color: #9ca3af;
+  color: #7a7b7b;
   font-size: 12px;
 }
 
 .confirm-card--error {
-  color: #dc2626;
-  background: #fef2f2;
-  border-color: #fca5a5;
+  color: #a83836;
+  background: #fff0ef;
+  border-color: #fa746f;
   font-size: 12px;
 }
 
@@ -399,7 +505,7 @@
   margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 
 .query-result-row {
@@ -409,14 +515,14 @@
   gap: 8px;
   padding: 5px 8px;
   background: #fff;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
+  border: 1px solid #e3e2e2;
+  border-radius: 4px;
 }
 
 .query-result-title {
   font-size: 12px;
   font-weight: 600;
-  color: #111827;
+  color: #313333;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -425,11 +531,11 @@
 
 .query-result-time {
   font-size: 11px;
-  color: #6b7280;
+  color: #5e5f5f;
   flex-shrink: 0;
 }
 
-/* ─── Delete candidate rows (inside DeleteConfirmCard) ───────────────────── */
+/* ─── Delete candidate rows ──────────────────────────────────────────────── */
 
 .delete-candidate-row {
   display: flex;
@@ -449,7 +555,7 @@
 .delete-candidate-title {
   font-size: 13px;
   font-weight: 600;
-  color: #111827;
+  color: #313333;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -457,5 +563,5 @@
 
 .delete-candidate-time {
   font-size: 11px;
-  color: #6b7280;
+  color: #5e5f5f;
 }
