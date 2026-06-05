@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import axios from 'axios';
+import api from '../../lib/api';
 import useCalendar from '../../hooks/useCalendar';
 import './CalendarView.css';
 
@@ -415,7 +415,7 @@ export default function CalendarView() {
 
   async function handleDeleteEvent(eventId) {
     try {
-      await axios.delete(`/api/calendar/events/${eventId}`, { withCredentials: true });
+      await api.delete(`/api/calendar/events/${eventId}`);
       window.dispatchEvent(new CustomEvent('nudge:event-deleted'));
       return { success: true };
     } catch (err) {

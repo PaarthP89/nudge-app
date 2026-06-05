@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './VoiceMode.css';
 
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
 function playPing() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -131,7 +133,7 @@ export default function VoiceMode({ onClose }) {
     abortRef.current = abort;
 
     try {
-      const res = await fetch('/api/assistant/voice-parse', {
+      const res = await fetch(`${API_BASE}/api/assistant/voice-parse`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },

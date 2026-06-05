@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react';
-import axios from 'axios';
+import api from '../lib/api';
 
 function makeMessage(role, content, type = 'text', payload = null) {
   return {
@@ -96,7 +96,7 @@ export default function useChat() {
 
   const confirmDelete = useCallback(async (eventId) => {
     try {
-      await axios.delete(`/api/calendar/events/${eventId}`, { withCredentials: true });
+      await api.delete(`/api/calendar/events/${eventId}`);
       draftRef.current = null;
       historyRef.current = [];
       setTimeout(() => window.dispatchEvent(new CustomEvent('nudge:event-deleted')), 500);
@@ -108,10 +108,9 @@ export default function useChat() {
 
   const confirmUpdate = useCallback(async (eventId, patches) => {
     try {
-      const res = await axios.patch(
+      const res = await api.patch(
         `/api/calendar/events/${eventId}`,
-        patches,
-        { withCredentials: true }
+        patches
       );
       draftRef.current = null;
       historyRef.current = [];
@@ -124,10 +123,9 @@ export default function useChat() {
 
   const confirmBatch = useCallback(async (events) => {
     try {
-      const res = await axios.post(
+      const res = await api.post(
         '/api/assistant/confirm-batch',
-        { events },
-        { withCredentials: true }
+        { events }
       );
       draftRef.current = null;
       historyRef.current = [];
@@ -140,10 +138,9 @@ export default function useChat() {
 
   const confirmEvent = useCallback(async (intent) => {
     try {
-      const res = await axios.post(
+      const res = await api.post(
         '/api/assistant/confirm',
-        { intent },
-        { withCredentials: true }
+        { intent }
       );
       draftRef.current = null;
       setTimeout(() => window.dispatchEvent(new CustomEvent('nudge:event-created')), 500);
@@ -234,10 +231,9 @@ export default function useChat() {
     }); // e.g. "Friday, May 22, 2026 at 8:09 PM PDT" — unambiguously local
 
     try {
-      const res = await axios.post(
+      const res = await api.post(
         '/api/assistant/parse',
-        { message: messageToSend, history: historyRef.current, now: clientNow, timezone: clientTimezone },
-        { withCredentials: true }
+        { message: messageToSend, history: historyRef.current, now: clientNow, timezone: clientTimezone }
       );
       const { intent, reply, conflicts, suggestions, candidates, queryResults, updateProposal, batchPlan, slotOptions } = res.data;
 
@@ -347,10 +343,9 @@ export default function useChat() {
       hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
     });
     try {
-      const res = await axios.post(
+      const res = await api.post(
         '/api/assistant/parse',
-        { forcedIntent: pendingIntent, candidateId: candidate.id, now: clientNow, timezone: clientTimezone },
-        { withCredentials: true }
+        { forcedIntent: pendingIntent, candidateId: candidate.id, now: clientNow, timezone: clientTimezone }
       );
       const { updateProposal, reply } = res.data;
       const newMsgs = [];

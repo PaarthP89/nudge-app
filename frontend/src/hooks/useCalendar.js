@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import api from '../lib/api';
 
 export default function useCalendar(startDate, endDate) {
   const [events, setEvents] = useState([]);
@@ -14,9 +14,8 @@ export default function useCalendar(startDate, endDate) {
     setLoading(true);
     setError(null);
     try {
-      const res = await axios.get('/api/calendar/events', {
-        params: { start: startISO, end: endISO },
-        withCredentials: true
+      const res = await api.get('/api/calendar/events', {
+        params: { start: startISO, end: endISO }
       });
       setEvents(res.data.events);
     } catch (err) {

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../lib/api';
 
 export default function useAuth() {
   const [user, setUser] = useState(null);
@@ -7,7 +7,7 @@ export default function useAuth() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    axios.get('/api/auth/me', { withCredentials: true })
+    api.get('/api/auth/me')
       .then((res) => setUser(res.data))
       .catch((err) => {
         if (err.response?.status === 401) {
