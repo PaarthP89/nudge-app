@@ -14,6 +14,7 @@ const calendarRouter = require('./routes/calendar');
 const assistantRouter = require('./routes/assistant');
 const errorHandler = require('./middleware/errorHandler');
 
+app.set('trust proxy', 1);
 const app = express();
 
 app.use(helmet());
