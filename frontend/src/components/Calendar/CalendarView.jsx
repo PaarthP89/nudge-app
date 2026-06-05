@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
+import api from '../../lib/api';
 import useCalendar from '../../hooks/useCalendar';
 import './CalendarView.css';
 
@@ -96,9 +97,72 @@ function computeLayouts(events) {
   return result;
 }
 
+// ─── EventDetailModal ─────────────────────────────────────────────────────────
+
+function EventDetailModal({ event, onClose, onDelete }) {
+  const [status, setStatus] = useState('idle'); // idle | loading | error
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  if (!event) return null;
+
+  async function handleDelete() {
+    setStatus('loading');
+    const result = await onDelete(event.id);
+    if (result.success) {
+      onClose();
+    } else {
+      setStatus('error');
+      setErrorMsg(result.error);
+    }
+  }
+
+  return (
+    <div className="event-modal-overlay" onClick={onClose}>
+      <div className="event-modal" onClick={e => e.stopPropagation()}>
+        <h3 className="event-modal-title">{event.title}</h3>
+        <div className="event-modal-info">
+          {!event.allDay && (
+            <div className="event-modal-row">
+              <span className="event-modal-label">When</span>
+              <span>{formatTime(event.start)} – {formatTime(event.end)}</span>
+            </div>
+          )}
+          {event.location && (
+            <div className="event-modal-row">
+              <span className="event-modal-label">Where</span>
+              <span>{event.location}</span>
+            </div>
+          )}
+          {event.attendees?.length > 0 && (
+            <div className="event-modal-row">
+              <span className="event-modal-label">With</span>
+              <span>{event.attendees.filter(a => !a.self).map(a => a.displayName || a.email).join(', ')}</span>
+            </div>
+          )}
+        </div>
+        {status === 'error' && (
+          <div className="event-modal-error">{errorMsg}</div>
+        )}
+        <div className="event-modal-actions">
+          <button className="event-modal-close" onClick={onClose} disabled={status === 'loading'}>
+            Close
+          </button>
+          <button
+            className="event-modal-delete"
+            onClick={handleDelete}
+            disabled={status === 'loading'}
+          >
+            {status === 'loading' ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── WeekView ─────────────────────────────────────────────────────────────────
 
-function WeekView({ days, events, today }) {
+function WeekView({ days, events, today, onEventClick }) {
   const scrollRef = useRef(null);
 
   // Scroll so ~2 hours before now are visible on mount.
@@ -164,7 +228,12 @@ function WeekView({ days, events, today }) {
           {days.map(day => (
             <div key={day.toISOString()} className="week-allday-cell">
               {getAllDayForDay(day).map(ev => (
-                <div key={ev.id} className="week-allday-event" title={ev.title}>
+                <div
+                  key={ev.id}
+                  className="week-allday-event"
+                  title={ev.title}
+                  onClick={() => onEventClick?.(ev)}
+                >
                   {ev.title}
                 </div>
               ))}
@@ -216,6 +285,7 @@ function WeekView({ days, events, today }) {
                       className="week-event"
                       style={eventStyle(ev, col, totalCols)}
                       title={ev.title}
+                      onClick={() => onEventClick?.(ev)}
                     >
                       <div className="week-event-title">{ev.title}</div>
                       <div className="week-event-time">
@@ -243,7 +313,7 @@ function getEventsForDay(events, day) {
   });
 }
 
-function MonthView({ gridDays, currentMonth, events, today }) {
+function MonthView({ gridDays, currentMonth, events, today, onEventClick }) {
   return (
     <>
       <div className="day-labels">
@@ -279,6 +349,7 @@ function MonthView({ gridDays, currentMonth, events, today }) {
                     key={ev.id}
                     className={`event-chip${ev.allDay ? ' all-day' : ''}`}
                     title={ev.title}
+                    onClick={() => onEventClick?.(ev)}
                   >
                     {!ev.allDay && <span className="event-time">{formatTime(ev.start)}</span>}
                     <span className="event-title">{ev.title}</span>
@@ -303,6 +374,7 @@ export default function CalendarView() {
 
   const [viewMode,    setViewMode]    = useState('month');
   const [anchorDate,  setAnchorDate]  = useState(() => startOfDay(new Date()));
+  const [selectedEvent, setSelectedEvent] = useState(null);
 
   const { visibleStart, visibleEnd, gridDays, currentMonth } = useMemo(() => {
     if (viewMode === 'month') {
@@ -341,6 +413,16 @@ export default function CalendarView() {
     setAnchorDate(startOfDay(new Date()));
   }
 
+  async function handleDeleteEvent(eventId) {
+    try {
+      await api.delete(`/api/calendar/events/${eventId}`);
+      window.dispatchEvent(new CustomEvent('nudge:event-deleted'));
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err.response?.data?.error || 'Failed to delete event.' };
+    }
+  }
+
   const periodLabel =
     viewMode === 'month'
       ? formatMonthLabel(getMonthStart(anchorDate))
@@ -349,12 +431,12 @@ export default function CalendarView() {
   return (
     <div className="calendar-view">
       <div className="calendar-header">
+        <h2 className="period-label">{periodLabel}</h2>
         <div className="calendar-controls">
           <button className="nav-btn" onClick={() => navigate(-1)}>&#8249;</button>
           <button className="today-btn" onClick={goToday}>Today</button>
           <button className="nav-btn" onClick={() => navigate(1)}>&#8250;</button>
         </div>
-        <h2 className="period-label">{periodLabel}</h2>
         <div className="view-toggle">
           <button
             className={`toggle-btn${viewMode === 'month' ? ' active' : ''}`}
@@ -382,14 +464,31 @@ export default function CalendarView() {
           currentMonth={currentMonth}
           events={events}
           today={today}
+          onEventClick={setSelectedEvent}
         />
       ) : (
         <WeekView
           days={gridDays}
           events={events}
           today={today}
+          onEventClick={setSelectedEvent}
         />
       )}
+
+      <EventDetailModal
+        key={selectedEvent?.id ?? 'none'}
+        event={selectedEvent}
+        onClose={() => setSelectedEvent(null)}
+        onDelete={handleDeleteEvent}
+      />
+
+      <button
+        className="calendar-fab"
+        onClick={() => document.querySelector('.chat-input')?.focus()}
+        aria-label="New event"
+      >
+        +
+      </button>
     </div>
   );
 }

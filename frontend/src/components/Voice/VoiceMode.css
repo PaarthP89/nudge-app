@@ -1,0 +1,261 @@
+/* ─── Full-screen overlay ─────────────────────────────────────────────────── */
+
+.voice-mode {
+  position: fixed;
+  inset: 0;
+  background: #161616;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  color: #f4f4f4;
+  z-index: 1000;
+}
+
+/* ─── Header ─────────────────────────────────────────────────────────────── */
+
+.voice-mode-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #262626;
+}
+
+.voice-mode-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-mode-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #c6c6c6;
+  letter-spacing: 0.3px;
+}
+
+.voice-mode-close {
+  background: transparent;
+  border: none;
+  color: #8d8d8d;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  line-height: 1;
+}
+.voice-mode-close:hover { color: #f4f4f4; background: #393939; }
+
+/* ─── Stage (centered content area) ─────────────────────────────────────── */
+
+.voice-mode-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 36px;
+  padding: 32px 24px;
+  width: 100%;
+  max-width: 600px;
+}
+
+/* ─── Status ring ─────────────────────────────────────────────────────────── */
+
+.voice-status-ring {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px solid #393939;
+  background: #262626;
+  transition: border-color 0.3s, background 0.3s, box-shadow 0.3s;
+  flex-shrink: 0;
+}
+
+/* Spinning arc for thinking — on ::before so the label stays still */
+.voice-status-ring::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 4px solid transparent;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+/* ── Idle ── */
+.voice-status-ring--idle {
+  border-color: #393939;
+  background: #262626;
+}
+
+/* ── Listening — IBM Carbon Blue pulse ── */
+.voice-status-ring--listening {
+  border-color: #0f62fe;
+  background: rgba(15, 98, 254, 0.06);
+  box-shadow:
+    0 0 0 10px rgba(15, 98, 254, 0.08),
+    0 0 0 22px rgba(15, 98, 254, 0.04);
+  animation: voice-pulse-listen 2s ease-in-out infinite;
+}
+
+/* ── Thinking — spinning amber arc ── */
+.voice-status-ring--thinking {
+  border-color: transparent;
+  background: rgba(241, 194, 27, 0.04);
+}
+.voice-status-ring--thinking::before {
+  border-top-color: #f1c21b;
+  border-right-color: rgba(241, 194, 27, 0.35);
+  opacity: 1;
+  animation: voice-spin 0.85s linear infinite;
+}
+
+/* ── Speaking — green pulse ── */
+.voice-status-ring--speaking {
+  border-color: #24a148;
+  background: rgba(36, 161, 72, 0.06);
+  box-shadow:
+    0 0 0 8px rgba(36, 161, 72, 0.08),
+    0 0 0 18px rgba(36, 161, 72, 0.04);
+  animation: voice-pulse-speak 1.4s ease-in-out infinite;
+}
+
+/* ── Done ── */
+.voice-status-ring--done {
+  border-color: #4d4d4d;
+  background: #262626;
+}
+
+/* ── Error ── */
+.voice-status-ring--error {
+  border-color: #da1e28;
+  background: rgba(218, 30, 40, 0.06);
+}
+
+.voice-status-label {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #f4f4f4;
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Animations ── */
+
+@keyframes voice-pulse-listen {
+  0%, 100% {
+    box-shadow:
+      0 0 0 10px rgba(15, 98, 254, 0.08),
+      0 0 0 22px rgba(15, 98, 254, 0.04);
+  }
+  50% {
+    box-shadow:
+      0 0 0 18px rgba(15, 98, 254, 0.12),
+      0 0 0 36px rgba(15, 98, 254, 0.05);
+  }
+}
+
+@keyframes voice-pulse-speak {
+  0%, 100% { box-shadow: 0 0 0 8px rgba(36, 161, 72, 0.08), 0 0 0 18px rgba(36, 161, 72, 0.04); }
+  50%       { box-shadow: 0 0 0 14px rgba(36, 161, 72, 0.12), 0 0 0 28px rgba(36, 161, 72, 0.06); }
+}
+
+@keyframes voice-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Transcript ──────────────────────────────────────────────────────────── */
+
+.voice-transcript {
+  font-size: 20px;
+  color: #e0e0e0;
+  text-align: center;
+  max-width: 480px;
+  line-height: 1.5;
+  font-style: italic;
+  font-weight: 300;
+}
+
+/* ─── Last reply ──────────────────────────────────────────────────────────── */
+
+.voice-reply {
+  font-size: 15px;
+  color: #a8a8a8;
+  text-align: center;
+  max-width: 480px;
+  line-height: 1.65;
+  padding: 14px 18px;
+  background: #262626;
+  border-radius: 8px;
+  border-left: 3px solid #4d4d4d;
+}
+
+/* ─── Error ───────────────────────────────────────────────────────────────── */
+
+.voice-error {
+  font-size: 14px;
+  color: #ff8389;
+  text-align: center;
+  max-width: 400px;
+  line-height: 1.5;
+}
+
+/* ─── Bottom controls ─────────────────────────────────────────────────────── */
+
+.voice-mode-controls {
+  padding: 28px 24px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+}
+
+.voice-start-btn {
+  background: #0f62fe;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 14px 36px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.2px;
+  transition: background 0.15s;
+}
+.voice-start-btn:hover { background: #0048c4; }
+.voice-start-btn:active { background: #002d9c; }
+
+/* ─── Stop FAB ───────────────────────────────────────────────────────────── */
+
+.voice-stop-fab {
+  position: fixed;
+  bottom: 32px;
+  right: 32px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #da1e28;
+  color: #fff;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  transition: background 0.15s, transform 0.1s;
+  z-index: 1010;
+  line-height: 1;
+}
+.voice-stop-fab:hover  { background: #b81922; transform: scale(1.06); }
+.voice-stop-fab:active { background: #750e13; transform: scale(0.97); }

@@ -1,4 +1,21 @@
-const { normalizeEvent, detectConflicts } = require('../../src/services/googleCalendar');
+jest.mock('googleapis', () => ({
+  google: {
+    auth: {
+      OAuth2: jest.fn().mockImplementation(() => ({ setCredentials: jest.fn() }))
+    },
+    calendar: jest.fn().mockReturnValue({
+      events: {
+        list:   jest.fn().mockResolvedValue({ data: { items: [] } }),
+        insert: jest.fn(),
+        patch:  jest.fn(),
+        delete: jest.fn()
+      }
+    })
+  }
+}));
+
+const GoogleCalendarService = require('../../src/services/googleCalendar');
+const { normalizeEvent, detectConflicts } = GoogleCalendarService;
 
 describe('normalizeEvent — timed events', () => {
   it('normalizes a standard timed event', () => {
@@ -200,5 +217,60 @@ describe('detectConflicts', () => {
     const event = makeTimedEvent('2026-05-23T09:30:00Z', '2026-05-23T10:30:00Z');
     const intent = { ...baseIntent, end_time: null, duration_minutes: null };
     expect(detectConflicts([event], intent)).toHaveLength(1);
+  });
+});
+
+// ── GoogleCalendarService.updateEvent ─────────────────────────────────────────
+
+describe('GoogleCalendarService — updateEvent', () => {
+  beforeEach(() => {
+    process.env.GOOGLE_CLIENT_ID = 'test-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'test-secret';
+  });
+
+  it('calls calendar.events.patch with correct params and sendUpdates: all', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const mockPatch = jest.fn().mockResolvedValue({
+      data: {
+        id: 'event123',
+        summary: 'New Title',
+        start: { dateTime: '2026-05-28T10:00:00Z' },
+        end:   { dateTime: '2026-05-28T11:00:00Z' },
+        status: 'confirmed'
+      }
+    });
+    service.calendar = { events: { patch: mockPatch } };
+
+    await service.updateEvent('event123', { summary: 'New Title' });
+
+    expect(mockPatch).toHaveBeenCalledWith({
+      calendarId: 'primary',
+      eventId: 'event123',
+      resource: { summary: 'New Title' },
+      sendUpdates: 'all'
+    });
+  });
+
+  it('returns a normalized event from the patch response', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    service.calendar = {
+      events: {
+        patch: jest.fn().mockResolvedValue({
+          data: {
+            id: 'event123',
+            summary: 'Updated Meeting',
+            start: { dateTime: '2026-05-28T10:00:00Z' },
+            end:   { dateTime: '2026-05-28T11:00:00Z' },
+            status: 'confirmed'
+          }
+        })
+      }
+    };
+
+    const result = await service.updateEvent('event123', { summary: 'Updated Meeting' });
+
+    expect(result.id).toBe('event123');
+    expect(result.title).toBe('Updated Meeting');
+    expect(result.allDay).toBe(false);
   });
 });

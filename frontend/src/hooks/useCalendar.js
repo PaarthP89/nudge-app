@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
+import api from '../lib/api';
 
 export default function useCalendar(startDate, endDate) {
   const [events, setEvents] = useState([]);
@@ -14,9 +14,8 @@ export default function useCalendar(startDate, endDate) {
     setLoading(true);
     setError(null);
     try {
-      const res = await axios.get('/api/calendar/events', {
-        params: { start: startISO, end: endISO },
-        withCredentials: true
+      const res = await api.get('/api/calendar/events', {
+        params: { start: startISO, end: endISO }
       });
       setEvents(res.data.events);
     } catch (err) {
@@ -37,7 +36,15 @@ export default function useCalendar(startDate, endDate) {
   useEffect(() => {
     const handler = () => fetchEvents();
     window.addEventListener('nudge:event-created', handler);
-    return () => window.removeEventListener('nudge:event-created', handler);
+    window.addEventListener('nudge:event-deleted', handler);
+    window.addEventListener('nudge:event-updated', handler);
+    window.addEventListener('nudge:batch-created', handler);
+    return () => {
+      window.removeEventListener('nudge:event-created', handler);
+      window.removeEventListener('nudge:event-deleted', handler);
+      window.removeEventListener('nudge:event-updated', handler);
+      window.removeEventListener('nudge:batch-created', handler);
+    };
   }, [fetchEvents]);
 
   return { events, loading, error, refetch: fetchEvents };

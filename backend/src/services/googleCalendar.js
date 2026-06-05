@@ -77,12 +77,30 @@ class GoogleCalendarService {
     return normalizeEvent(response.data);
   }
 
-  async updateEvent(eventId, updates) {
-    throw new Error('not implemented');
+  async updateEvent(eventId, patches) {
+    const response = await this.calendar.events.patch({
+      calendarId: 'primary',
+      eventId,
+      resource: patches,
+      sendUpdates: 'all'
+    });
+    return normalizeEvent(response.data);
   }
 
   async deleteEvent(eventId) {
-    throw new Error('not implemented');
+    await this.calendar.events.delete({
+      calendarId: 'primary',
+      eventId,
+      sendUpdates: 'all',
+    });
+  }
+
+  async getEvent(eventId) {
+    const response = await this.calendar.events.get({
+      calendarId: 'primary',
+      eventId,
+    });
+    return normalizeEvent(response.data);
   }
 
   async getFreeBusy(startDate, endDate) {
