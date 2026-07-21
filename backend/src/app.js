@@ -5,8 +5,6 @@ const helmet = require('helmet');
 const session = require('express-session');
 const passport = require('passport');
 
-console.log('[DEBUG] GOOGLE_CLIENT_ID loaded:', process.env.GOOGLE_CLIENT_ID?.slice(-10));
-
 require('./config/passport');
 
 const authRouter = require('./routes/auth');
