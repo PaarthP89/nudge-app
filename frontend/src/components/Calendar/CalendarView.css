@@ -353,6 +353,7 @@
   flex: 1;
   position: relative;
   border-left: 1px solid #e3e2e2;
+  cursor: pointer;
 }
 
 .week-day-col.today { background: #f8faff; }
@@ -524,6 +525,74 @@
 
 .event-modal-delete:hover:not(:disabled) { background: #67040d; }
 .event-modal-delete:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* ─── Create event modal ──────────────────────────────────────────────────── */
+
+.create-event-modal {
+  width: 440px;
+}
+
+.create-field {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #e3e2e2;
+  border-radius: 4px;
+  padding: 7px 9px;
+  font-size: 13px;
+  font-family: inherit;
+  color: #313333;
+  background: #fff;
+}
+
+.create-field:focus {
+  outline: none;
+  border-color: #0f62fe;
+}
+
+.create-field-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.create-field-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.create-field-row .create-field:first-child {
+  flex: 1.2;
+}
+
+.create-field-time {
+  flex: 1;
+  min-width: 100px;
+}
+
+.create-field-sep {
+  color: #7a7b7b;
+  flex-shrink: 0;
+}
+
+.create-field-description {
+  resize: vertical;
+  min-height: 48px;
+}
+
+.event-modal-save {
+  background: #0f62fe;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.event-modal-save:hover:not(:disabled) { background: #0048c4; }
+.event-modal-save:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* ─── FAB ─────────────────────────────────────────────────────────────────── */
 

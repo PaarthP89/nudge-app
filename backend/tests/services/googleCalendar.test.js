@@ -274,3 +274,209 @@ describe('GoogleCalendarService — updateEvent', () => {
     expect(result.allDay).toBe(false);
   });
 });
+
+// ── GoogleCalendarService.createEvent ─────────────────────────────────────────
+
+describe('GoogleCalendarService — createEvent', () => {
+  beforeEach(() => {
+    process.env.GOOGLE_CLIENT_ID = 'test-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'test-secret';
+  });
+
+  function mockInsert(overrides = {}) {
+    return jest.fn().mockResolvedValue({
+      data: {
+        id: 'new-event-1',
+        summary: 'Team standup',
+        start: { dateTime: '2026-05-28T10:00:00Z' },
+        end:   { dateTime: '2026-05-28T11:00:00Z' },
+        status: 'confirmed',
+        ...overrides
+      }
+    });
+  }
+
+  it('calls calendar.events.insert with title, start, end and sendUpdates: none', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Team standup',
+      start_time: '2026-05-28T10:00:00Z',
+      end_time: '2026-05-28T11:00:00Z'
+    });
+
+    expect(insert).toHaveBeenCalledWith({
+      calendarId: 'primary',
+      resource: {
+        summary: 'Team standup',
+        start: { dateTime: '2026-05-28T10:00:00Z' },
+        end: { dateTime: '2026-05-28T11:00:00Z' }
+      },
+      sendUpdates: 'none'
+    });
+  });
+
+  it('derives end_time from duration_minutes when end_time is absent', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Focus block',
+      start_time: '2026-05-28T10:00:00.000Z',
+      duration_minutes: 45
+    });
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({
+        end: { dateTime: '2026-05-28T10:45:00.000Z' }
+      })
+    }));
+  });
+
+  it('defaults to a 60-minute event when no end_time or duration_minutes given', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Untimed thing',
+      start_time: '2026-05-28T10:00:00.000Z'
+    });
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({
+        end: { dateTime: '2026-05-28T11:00:00.000Z' }
+      })
+    }));
+  });
+
+  it('defaults title to "New Event" when title is missing', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({ start_time: '2026-05-28T10:00:00.000Z' });
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({ summary: 'New Event' })
+    }));
+  });
+
+  it('includes location when provided', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Coffee',
+      start_time: '2026-05-28T10:00:00.000Z',
+      end_time: '2026-05-28T10:30:00.000Z',
+      location: 'Blue Bottle'
+    });
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({ location: 'Blue Bottle' })
+    }));
+  });
+
+  it('omits location when not provided', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Coffee',
+      start_time: '2026-05-28T10:00:00.000Z',
+      end_time: '2026-05-28T10:30:00.000Z'
+    });
+
+    const resource = insert.mock.calls[0][0].resource;
+    expect(resource).not.toHaveProperty('location');
+  });
+
+  it('includes description when provided', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Planning session',
+      start_time: '2026-05-28T10:00:00.000Z',
+      end_time: '2026-05-28T11:00:00.000Z',
+      description: 'Bring the roadmap doc'
+    });
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({ description: 'Bring the roadmap doc' })
+    }));
+  });
+
+  it('omits description when not provided', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Planning session',
+      start_time: '2026-05-28T10:00:00.000Z',
+      end_time: '2026-05-28T11:00:00.000Z'
+    });
+
+    const resource = insert.mock.calls[0][0].resource;
+    expect(resource).not.toHaveProperty('description');
+  });
+
+  it('filters attendees to only entries containing "@" and sets them on the resource', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Sync',
+      start_time: '2026-05-28T10:00:00.000Z',
+      end_time: '2026-05-28T10:30:00.000Z',
+      attendees: ['sam@example.com', 'not-an-email', 'jo@example.com']
+    });
+
+    expect(insert).toHaveBeenCalledWith(expect.objectContaining({
+      resource: expect.objectContaining({
+        attendees: [{ email: 'sam@example.com' }, { email: 'jo@example.com' }]
+      })
+    }));
+  });
+
+  it('omits attendees when none are valid emails', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    await service.createEvent({
+      title: 'Sync',
+      start_time: '2026-05-28T10:00:00.000Z',
+      end_time: '2026-05-28T10:30:00.000Z',
+      attendees: ['not-an-email']
+    });
+
+    const resource = insert.mock.calls[0][0].resource;
+    expect(resource).not.toHaveProperty('attendees');
+  });
+
+  it('returns a normalized event from the insert response', async () => {
+    const service = new GoogleCalendarService('access-tok', 'refresh-tok');
+    const insert = mockInsert();
+    service.calendar = { events: { insert } };
+
+    const result = await service.createEvent({
+      title: 'Team standup',
+      start_time: '2026-05-28T10:00:00.000Z',
+      end_time: '2026-05-28T11:00:00.000Z'
+    });
+
+    expect(result.id).toBe('new-event-1');
+    expect(result.title).toBe('Team standup');
+    expect(result.allDay).toBe(false);
+  });
+});

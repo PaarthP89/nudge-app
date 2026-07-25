@@ -5,7 +5,7 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 
 **Goal:** Reduce time-to-schedule by 80% vs. manual Google Calendar entry. Deployable web app suitable for portfolio demonstration.
 
-**Status:** Phase 4 complete + post-launch bug fixes (2026-06-05). All phases done: MVP, enhanced UX, agentic scheduling, and hands-free voice mode. 205 tests passing. Full feature list: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, goal-oriented free-slot finding, hands-free voice mode with continuous STT/TTS loop and session interceptors. Voice agent confirmed working end-to-end: create, delete, update, and post-action exit flow.
+**Status:** Phase 4 complete + deployed to production (2026-06-05). All phases done: MVP, enhanced UX, agentic scheduling, and hands-free voice mode. 205 tests passing. Live at https://nudge-calendar-assistant.vercel.app (backend on Render, frontend on Vercel). Full feature list: multi-turn chat, draft accumulation, conflict detection, AI rescheduling suggestions, chat-based delete, calendar query, email invites, event deletion via calendar click, 30-day persistent sessions, natural language event editing, recurring/batch event scheduling, autonomous conflict resolution, goal-oriented free-slot finding, hands-free voice mode with continuous STT/TTS loop and session interceptors. Voice agent confirmed working end-to-end: create, delete, update, and post-action exit flow.
 
 **Note:** This document is updated regularly as features are completed. Check the Phase checkboxes and timestamps to track progress.
 
@@ -29,8 +29,8 @@ Nudge is an intelligent scheduling assistant that lets users schedule calendar e
 - **Google OAuth 2.0** — authentication with calendar + Gmail scopes
 
 ### Deployment
-- Backend: Railway or Render
-- Frontend: Vercel
+- **Backend:** Render (live)
+- **Frontend:** Vercel — https://nudge-calendar-assistant.vercel.app
 
 ## Development Approach
 - **TDD / Test First:** Write tests for backend endpoints and core logic before implementation
