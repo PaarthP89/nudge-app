@@ -160,10 +160,225 @@ function EventDetailModal({ event, onClose, onDelete }) {
   );
 }
 
+// ─── CreateEventModal ─────────────────────────────────────────────────────────
+
+const DEFAULT_DURATION_MINUTES = 60;
+
+function toDateInputValue(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// Formats a Date's time-of-day as free text for the input, e.g. "6:00 PM".
+function toTimeInputText(date) {
+  return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+// Parses free-typed time text ("6:33 PM", "6:33pm", "18:33", "6 am") into { hours, minutes }.
+// No am/pm suffix is treated as 24-hour. Returns null if unparseable.
+function parseTimeInput(raw) {
+  if (!raw) return null;
+  const cleaned = raw.trim().toLowerCase().replace(/\./g, '');
+  const match = cleaned.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+  if (!match) return null;
+
+  let hours = parseInt(match[1], 10);
+  const minutes = match[2] ? parseInt(match[2], 10) : 0;
+  const meridiem = match[3];
+  if (minutes > 59) return null;
+
+  if (meridiem) {
+    if (hours < 1 || hours > 12) return null;
+    hours = hours % 12;
+    if (meridiem === 'pm') hours += 12;
+  } else if (hours > 23) {
+    return null;
+  }
+
+  return { hours, minutes };
+}
+
+function combineDateAndTimeText(dateStr, timeText) {
+  const parsed = parseTimeInput(timeText);
+  if (!parsed) return null;
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  return new Date(y, mo - 1, d, parsed.hours, parsed.minutes, 0, 0);
+}
+
+function CreateEventModal({ draft, onClose, onCreated }) {
+  const [title, setTitle] = useState('');
+  const [date, setDate] = useState('');
+  const [startTimeText, setStartTimeText] = useState('');
+  const [endTimeText, setEndTimeText] = useState('');
+  const [location, setLocation] = useState('');
+  const [description, setDescription] = useState('');
+  const [attendees, setAttendees] = useState('');
+  const [status, setStatus] = useState('idle'); // idle | loading | error
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  useEffect(() => {
+    if (!draft) return;
+    setTitle('');
+    setDate(toDateInputValue(draft.start));
+    setStartTimeText(toTimeInputText(draft.start));
+    setEndTimeText(toTimeInputText(draft.end));
+    setLocation('');
+    setDescription('');
+    setAttendees('');
+    setStatus('idle');
+    setErrorMsg(null);
+  }, [draft]);
+
+  if (!draft) return null;
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!date || !startTimeText || !endTimeText) return;
+
+    const start = combineDateAndTimeText(date, startTimeText);
+    const end = combineDateAndTimeText(date, endTimeText);
+    if (!start || !end) {
+      setStatus('error');
+      setErrorMsg('Enter times like "6:33 PM" or "18:33".');
+      return;
+    }
+    if (end <= start) {
+      setStatus('error');
+      setErrorMsg('End time must be after start time.');
+      return;
+    }
+
+    const emailAttendees = attendees
+      .split(',')
+      .map(a => a.trim())
+      .filter(a => a.includes('@'));
+
+    const intent = {
+      action: 'create',
+      title: title.trim() || undefined,
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+      location: location.trim() || undefined,
+      description: description.trim() || undefined,
+      attendees: emailAttendees,
+      confidence: 1,
+    };
+
+    setStatus('loading');
+    try {
+      await api.post('/api/assistant/confirm', { intent });
+      window.dispatchEvent(new CustomEvent('nudge:event-created'));
+      onCreated?.();
+      onClose();
+    } catch (err) {
+      setStatus('error');
+      setErrorMsg(err.response?.data?.error || 'Failed to create event.');
+    }
+  }
+
+  return (
+    <div className="event-modal-overlay" onClick={onClose}>
+      <form className="event-modal create-event-modal" onClick={e => e.stopPropagation()} onSubmit={handleSubmit}>
+        <h3 className="event-modal-title">New event</h3>
+
+        <input
+          className="create-field create-field-title"
+          type="text"
+          placeholder="Add title"
+          value={title}
+          onChange={e => setTitle(e.target.value)}
+          autoFocus
+        />
+
+        <div className="create-field-row">
+          <input
+            className="create-field"
+            type="date"
+            value={date}
+            onChange={e => setDate(e.target.value)}
+            required
+          />
+          <input
+            className="create-field create-field-time"
+            type="text"
+            placeholder="6:33 PM"
+            value={startTimeText}
+            onChange={e => setStartTimeText(e.target.value)}
+            required
+          />
+          <span className="create-field-sep">–</span>
+          <input
+            className="create-field create-field-time"
+            type="text"
+            placeholder="7:45 AM"
+            value={endTimeText}
+            onChange={e => setEndTimeText(e.target.value)}
+            required
+          />
+        </div>
+
+        <input
+          className="create-field"
+          type="text"
+          placeholder="Add location"
+          value={location}
+          onChange={e => setLocation(e.target.value)}
+        />
+
+        <input
+          className="create-field"
+          type="text"
+          placeholder="Add guests (comma-separated emails)"
+          value={attendees}
+          onChange={e => setAttendees(e.target.value)}
+        />
+
+        <textarea
+          className="create-field create-field-description"
+          placeholder="Add description"
+          value={description}
+          onChange={e => setDescription(e.target.value)}
+          rows={3}
+        />
+
+        {status === 'error' && (
+          <div className="event-modal-error">{errorMsg}</div>
+        )}
+
+        <div className="event-modal-actions">
+          <button type="button" className="event-modal-close" onClick={onClose} disabled={status === 'loading'}>
+            Cancel
+          </button>
+          <button type="submit" className="event-modal-save" disabled={status === 'loading'}>
+            {status === 'loading' ? 'Creating…' : 'Save'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 // ─── WeekView ─────────────────────────────────────────────────────────────────
 
-function WeekView({ days, events, today, onEventClick }) {
+const SLOT_SNAP_MINUTES = 30;
+
+function WeekView({ days, events, today, onEventClick, onSlotClick }) {
   const scrollRef = useRef(null);
+
+  function handleSlotClick(day, e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const rawMinutes = Math.max(0, Math.min(1439, e.clientY - rect.top)); // 1px = 1min
+    const snapped = Math.round(rawMinutes / SLOT_SNAP_MINUTES) * SLOT_SNAP_MINUTES;
+    const minutesFromMidnight = Math.min(1440 - SLOT_SNAP_MINUTES, snapped);
+
+    const start = startOfDay(day);
+    start.setMinutes(minutesFromMidnight);
+    const end = new Date(start.getTime() + DEFAULT_DURATION_MINUTES * 60000);
+
+    onSlotClick?.({ start, end });
+  }
 
   // Scroll so ~2 hours before now are visible on mount.
   useEffect(() => {
@@ -232,7 +447,7 @@ function WeekView({ days, events, today, onEventClick }) {
                   key={ev.id}
                   className="week-allday-event"
                   title={ev.title}
-                  onClick={() => onEventClick?.(ev)}
+                  onClick={e => { e.stopPropagation(); onEventClick?.(ev); }}
                 >
                   {ev.title}
                 </div>
@@ -261,7 +476,11 @@ function WeekView({ days, events, today, onEventClick }) {
             const layouts   = computeLayouts(dayEvents);
 
             return (
-              <div key={day.toISOString()} className={`week-day-col${isToday ? ' today' : ''}`}>
+              <div
+                key={day.toISOString()}
+                className={`week-day-col${isToday ? ' today' : ''}`}
+                onClick={e => handleSlotClick(day, e)}
+              >
                 {/* Hour lines */}
                 {HOURS.map(h => (
                   <div key={h} className="week-hour-line" style={{ top: `${h * HOUR_HEIGHT}px` }} />
@@ -285,7 +504,7 @@ function WeekView({ days, events, today, onEventClick }) {
                       className="week-event"
                       style={eventStyle(ev, col, totalCols)}
                       title={ev.title}
-                      onClick={() => onEventClick?.(ev)}
+                      onClick={e => { e.stopPropagation(); onEventClick?.(ev); }}
                     >
                       <div className="week-event-title">{ev.title}</div>
                       <div className="week-event-time">
@@ -375,6 +594,7 @@ export default function CalendarView() {
   const [viewMode,    setViewMode]    = useState('month');
   const [anchorDate,  setAnchorDate]  = useState(() => startOfDay(new Date()));
   const [selectedEvent, setSelectedEvent] = useState(null);
+  const [createDraft, setCreateDraft] = useState(null);
 
   const { visibleStart, visibleEnd, gridDays, currentMonth } = useMemo(() => {
     if (viewMode === 'month') {
@@ -472,6 +692,7 @@ export default function CalendarView() {
           events={events}
           today={today}
           onEventClick={setSelectedEvent}
+          onSlotClick={setCreateDraft}
         />
       )}
 
@@ -480,6 +701,11 @@ export default function CalendarView() {
         event={selectedEvent}
         onClose={() => setSelectedEvent(null)}
         onDelete={handleDeleteEvent}
+      />
+
+      <CreateEventModal
+        draft={createDraft}
+        onClose={() => setCreateDraft(null)}
       />
 
       <button

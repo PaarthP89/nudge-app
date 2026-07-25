@@ -64,6 +64,7 @@ class GoogleCalendarService {
       end: { dateTime: endTime }
     };
     if (intent.location) resource.location = intent.location;
+    if (intent.description) resource.description = intent.description;
     const emailAttendees = (intent.attendees || []).filter(a => a.includes('@'));
     if (emailAttendees.length > 0) {
       resource.attendees = emailAttendees.map(email => ({ email }));
